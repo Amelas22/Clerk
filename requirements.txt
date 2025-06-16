@@ -1,0 +1,43 @@
+# Core dependencies
+python-dotenv
+pydantic
+
+# Box SDK
+boxsdk[jwt]
+
+# PDF processing
+PyPDF2
+pdfplumber
+pdfminer.six
+
+# OpenAI
+openai
+
+# Supabase and vector storage
+supabase
+pgvector
+
+# Utilities
+tenacity
+numpy
+
+# Async support
+asyncio
+aiohttp
+
+# Logging and monitoring
+python-json-logger
+
+# Reporting
+pandas
+openpyxl  # For Excel export
+
+# Development dependencies
+pytest
+pytest-asyncio
+black
+flake8
+mypy
+
+# Type hints
+types-requests
