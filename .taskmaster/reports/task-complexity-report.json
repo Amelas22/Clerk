@@ -1,0 +1,173 @@
+{
+	"meta": {
+		"generatedAt": "2025-06-16T05:29:37.335Z",
+		"tasksAnalyzed": 20,
+		"totalTasks": 20,
+		"analysisCount": 20,
+		"thresholdScore": 5,
+		"projectName": "Taskmaster",
+		"usedResearch": true
+	},
+	"complexityAnalysis": [
+		{
+			"taskId": 1,
+			"taskTitle": "Set up Development Environment",
+			"complexityScore": 6,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Break down each tool and dependency setup into individual subtasks.",
+			"reasoning": "The task involves multiple steps that require specific configurations and installations, each of which can be a subtask."
+		},
+		{
+			"taskId": 2,
+			"taskTitle": "Implement Box API Integration",
+			"complexityScore": 7,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Create subtasks for each API function implementation and testing.",
+			"reasoning": "Integrating with an external API involves authentication, data retrieval, and error handling, each needing detailed attention."
+		},
+		{
+			"taskId": 3,
+			"taskTitle": "Build PDF Text Extraction Module",
+			"complexityScore": 8,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Divide the task into subtasks for each type of document handling and error management.",
+			"reasoning": "Handling various document types and ensuring accurate text extraction requires complex logic and testing."
+		},
+		{
+			"taskId": 4,
+			"taskTitle": "Implement Document Chunking with Context",
+			"complexityScore": 7,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Create subtasks for text splitting, summary generation, and special case handling.",
+			"reasoning": "The task involves multiple steps that require careful handling of text and context, each of which can be a subtask."
+		},
+		{
+			"taskId": 5,
+			"taskTitle": "Develop Hash-based Document Deduplication",
+			"complexityScore": 6,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Break down the task into subtasks for hash calculation, database operations, and cleanup.",
+			"reasoning": "The task involves implementing a deduplication system which requires several distinct operations."
+		},
+		{
+			"taskId": 6,
+			"taskTitle": "Configure Supabase Vector Database",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Create subtasks for setting up the database, creating tables, and configuring security.",
+			"reasoning": "Setting up a database with vector capabilities involves multiple configuration and security steps."
+		},
+		{
+			"taskId": 7,
+			"taskTitle": "Implement Vector Embedding Generation",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Divide the task into subtasks for model integration, batch processing, and caching.",
+			"reasoning": "Generating embeddings efficiently requires integration with models and handling large data sets."
+		},
+		{
+			"taskId": 8,
+			"taskTitle": "Build Vector Storage and Retrieval System",
+			"complexityScore": 8,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Create subtasks for vector storage, search functionality, and metadata filtering.",
+			"reasoning": "The task involves complex operations for storing and retrieving vectors with metadata filtering."
+		},
+		{
+			"taskId": 9,
+			"taskTitle": "Implement Document Processing Pipeline",
+			"complexityScore": 9,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Break down the pipeline into subtasks for each processing stage and error handling.",
+			"reasoning": "An end-to-end pipeline involves multiple integrated components and error handling mechanisms."
+		},
+		{
+			"taskId": 10,
+			"taskTitle": "Set Up Ollama with LLM for Local AI Processing",
+			"complexityScore": 7,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Create subtasks for installation, model configuration, and client wrapper implementation.",
+			"reasoning": "Setting up local AI processing involves multiple configuration steps and integration with existing systems."
+		},
+		{
+			"taskId": 11,
+			"taskTitle": "Develop Case Researcher AI Agent",
+			"complexityScore": 8,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Divide the task into subtasks for question analysis, vector search, and response generation.",
+			"reasoning": "Developing an AI agent involves complex logic for understanding questions and generating responses."
+		},
+		{
+			"taskId": 12,
+			"taskTitle": "Implement Motion Drafting AI Agent",
+			"complexityScore": 9,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Create subtasks for motion analysis, counter-argument research, and document generation.",
+			"reasoning": "The task involves complex AI-driven analysis and document generation, requiring detailed subtasks."
+		},
+		{
+			"taskId": 13,
+			"taskTitle": "Integrate External Research APIs",
+			"complexityScore": 6,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Break down the task into subtasks for API integration, request handling, and result parsing.",
+			"reasoning": "Integrating external APIs involves multiple steps including authentication, data retrieval, and error handling."
+		},
+		{
+			"taskId": 14,
+			"taskTitle": "Develop Spreadsheet Integration for Outline Editing",
+			"complexityScore": 6,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Create subtasks for export, import, and validation functionalities.",
+			"reasoning": "The task involves creating functionalities for exporting and importing data with validation."
+		},
+		{
+			"taskId": 15,
+			"taskTitle": "Implement Word Document Generation",
+			"complexityScore": 7,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Divide the task into subtasks for document creation, formatting, and Box integration.",
+			"reasoning": "Generating formatted documents involves multiple steps including formatting and integration with storage solutions."
+		},
+		{
+			"taskId": 16,
+			"taskTitle": "Implement Deadline Tracking System",
+			"complexityScore": 7,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Break down the task into subtasks for deadline extraction, notification, and tracking.",
+			"reasoning": "Tracking deadlines involves multiple components including extraction, notification, and status tracking."
+		},
+		{
+			"taskId": 17,
+			"taskTitle": "Develop Task Management System",
+			"complexityScore": 7,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Create subtasks for task generation, assignment, and priority calculation.",
+			"reasoning": "Managing tasks involves generating, assigning, and prioritizing tasks, each requiring detailed attention."
+		},
+		{
+			"taskId": 18,
+			"taskTitle": "Set Up Open WebUI Chat Interface",
+			"complexityScore": 8,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Divide the task into subtasks for UI setup, authentication, and chat functionality.",
+			"reasoning": "Setting up a chat interface involves multiple components including UI design, authentication, and integration."
+		},
+		{
+			"taskId": 19,
+			"taskTitle": "Configure n8n for Workflow Automation",
+			"complexityScore": 7,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Create subtasks for each workflow setup, error handling, and scheduling.",
+			"reasoning": "Automating workflows involves setting up multiple workflows with error handling and scheduling."
+		},
+		{
+			"taskId": 20,
+			"taskTitle": "Implement Caching and Performance Optimization",
+			"complexityScore": 8,
+			"recommendedSubtasks": 8,
+			"expansionPrompt": "Break down the task into subtasks for caching implementation, optimization strategies, and performance monitoring.",
+			"reasoning": "Optimizing performance involves implementing caching and various optimization strategies, each requiring detailed attention."
+		}
+	]
+}
