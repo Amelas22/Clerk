@@ -9,15 +9,15 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
-from document_processing.box_client import BoxClient, BoxDocument
-from document_processing.pdf_extractor import PDFExtractor
-from document_processing.chunker import DocumentChunker
-from document_processing.deduplicator import DocumentDeduplicator
-from document_processing.context_generator import ContextGenerator
-from vector_storage.embeddings import EmbeddingGenerator
-from vector_storage.vector_store import VectorStore
-from vector_storage.fulltext_search import FullTextSearchManager
-from utils.cost_tracker import CostTracker
+from .document_processing.box_client import BoxClient, BoxDocument
+from .document_processing.pdf_extractor import PDFExtractor
+from .document_processing.chunker import DocumentChunker
+from .document_processing.deduplicator import DocumentDeduplicator
+from .document_processing.context_generator import ContextGenerator
+from .vector_storage.embeddings import EmbeddingGenerator
+from .vector_storage.vector_store import VectorStore
+from .vector_storage.fulltext_search import FullTextSearchManager
+from .utils.cost_tracker import CostTracker
 
 logger = logging.getLogger(__name__)
 

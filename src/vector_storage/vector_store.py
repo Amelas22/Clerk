@@ -10,7 +10,6 @@ from datetime import datetime
 import uuid
 
 from supabase import create_client, Client
-from pgvector.utils import to_db_vector
 
 from config.settings import settings
 
