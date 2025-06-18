@@ -35,7 +35,7 @@ def demonstrate_document_processing():
     print("(Processing first 5 documents for demonstration)")
     
     # Process documents
-    results = injector.process_case_folder(folder_id, max_documents=5)
+    results = injector.process_case_folder(folder_id, max_documents=1)
     
     # Display results
     print("\nProcessing Results:")
@@ -177,7 +177,7 @@ def verify_case_isolation():
         
         # Get statistics
         stats = vector_store.get_case_statistics(case)
-        print(f"  - Documents: {stats['total_documents']}")
+        print(f"  - Documents: {stats['unique_documents']}")
         print(f"  - Chunks: {stats['total_chunks']}")
 
 

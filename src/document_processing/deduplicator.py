@@ -6,10 +6,13 @@ Handles hash-based duplicate detection and tracking.
 import hashlib
 import logging
 import json
+import asyncio
 from typing import Optional, List, Dict, Tuple
 from datetime import datetime
+from urllib.parse import urljoin
 
-from supabase import create_client, Client
+from supabase import create_client, Client, acreate_client, AsyncClient
+from postgrest.exceptions import APIError
 
 from config.settings import settings
 
@@ -19,11 +22,11 @@ class DocumentDeduplicator:
     """Manages document deduplication using hash-based detection"""
     
     def __init__(self):
-        """Initialize deduplicator with database connection"""
-        self.supabase: Client = create_client(
-            settings.database.supabase_url,
-            settings.database.supabase_key
-        )
+        # Use the base Supabase URL, not the REST endpoint URL
+        supabase_url = settings.database.supabase_url
+        supabase_key = settings.database.supabase_service_key
+        self.supabase: Client = create_client(supabase_url, supabase_key)
+        
         self._ensure_table_exists()
     
     def _ensure_table_exists(self):
@@ -34,7 +37,7 @@ class DocumentDeduplicator:
             # Try to query the table
             self.supabase.table("document_registry").select("id").limit(1).execute()
             logger.info("Document registry table exists")
-        except Exception as e:
+        except APIError as e:
             logger.warning(f"Document registry table might not exist: {str(e)}")
             # In production, handle table creation properly
     
@@ -68,8 +71,39 @@ class DocumentDeduplicator:
             
             return False, None
             
-        except Exception as e:
+        except APIError as e:
             logger.error(f"Error checking document existence: {str(e)}")
+            raise
+    
+    async def check_document_exists_async(self, document_hash: str) -> Tuple[bool, Optional[Dict]]:
+        """Async version of check_document_exists
+        
+        Args:
+            document_hash: SHA-256 hash of document
+            
+        Returns:
+            Tuple of (exists: bool, existing_record: dict or None)
+        """
+        try:
+            # Create a new async client for this operation
+            supabase_url = settings.database.supabase_url
+            supabase_key = settings.database.supabase_service_key
+            async_client: AsyncClient = await acreate_client(supabase_url, supabase_key)
+            
+            result = await async_client.table("document_registry").select("*").eq(
+                "document_hash", document_hash
+            ).execute()
+            
+            # Close the async client connection
+            await async_client.aclose()
+            
+            if result.data and len(result.data) > 0:
+                return True, result.data[0]
+            
+            return False, None
+            
+        except APIError as e:
+            logger.error(f"Error checking document existence (async): {str(e)}")
             raise
     
     def register_new_document(self, document_hash: str, file_name: str, 
@@ -103,7 +137,7 @@ class DocumentDeduplicator:
             logger.info(f"Registered new document: {file_name} (hash: {document_hash[:8]}...)")
             return result.data[0]
             
-        except Exception as e:
+        except APIError as e:
             logger.error(f"Error registering document: {str(e)}")
             raise
     
@@ -160,7 +194,7 @@ class DocumentDeduplicator:
                 logger.info(f"Duplicate location already recorded: {duplicate_path}")
                 return record
                 
-        except Exception as e:
+        except APIError as e:
             logger.error(f"Error adding duplicate location: {str(e)}")
             raise
     
@@ -207,31 +241,69 @@ class DocumentDeduplicator:
             logger.info(f"Found {len(all_docs)} unique documents for case: {case_name}")
             return all_docs
             
-        except Exception as e:
+        except APIError as e:
             logger.error(f"Error getting case documents: {str(e)}")
-            raise
+            # Return empty list instead of crashing
+            return []
     
+
     def get_statistics(self) -> Dict:
-        """Get deduplication statistics
-        
-        Returns:
-            Dictionary with statistics
-        """
+        """Get deduplication statistics"""
         try:
             result = self.supabase.table("document_registry").select("*").execute()
             
             total_docs = len(result.data or [])
             total_duplicates = sum(
-                len(doc.get("duplicate_locations", [])) 
+                len(doc.get("duplicate_locations", []))
                 for doc in result.data or []
             )
-            
             cases = set()
             for doc in result.data or []:
                 cases.add(doc["case_name"])
                 for dup in doc.get("duplicate_locations", []):
                     cases.add(dup["case_name"])
+            return {
+                "total_unique_documents": total_docs,
+                "total_duplicate_instances": total_duplicates,  
+                "total_cases": len(cases),
+                "average_duplicates_per_document": (
+                    total_duplicates / total_docs if total_docs > 0 else 0
+                )
+            }
+        except APIError as e:
+            logger.error(f"Error getting statistics: {e}")
+            # Return empty stats instead of crashing
+            return {
+                "total_unique_documents": 0,
+                "total_duplicate_instances": 0,
+                "total_cases": 0,
+                "average_duplicates_per_document": 0
+            }
+
+    async def get_statistics_async(self) -> Dict:
+        """Async version of get_statistics (use in async context)"""
+        try:
+            # Create a new client with proper headers for async operation
+            supabase_url = settings.database.supabase_url
+            supabase_key = settings.database.supabase_service_key
+            async_client: AsyncClient = await acreate_client(supabase_url, supabase_key)
             
+            # Properly await the execute() method
+            result = await async_client.table("document_registry").select("*").execute()
+            
+            # Close the async client connection
+            await async_client.aclose()
+            
+            total_docs = len(result.data or [])
+            total_duplicates = sum(
+                len(doc.get("duplicate_locations", []))
+                for doc in result.data or []
+            )
+            cases = set()
+            for doc in result.data or []:
+                cases.add(doc["case_name"])
+                for dup in doc.get("duplicate_locations", []):
+                    cases.add(dup["case_name"])
             return {
                 "total_unique_documents": total_docs,
                 "total_duplicate_instances": total_duplicates,
@@ -240,7 +312,12 @@ class DocumentDeduplicator:
                     total_duplicates / total_docs if total_docs > 0 else 0
                 )
             }
-            
-        except Exception as e:
-            logger.error(f"Error getting statistics: {str(e)}")
-            raise
+        except APIError as e:
+            logger.error(f"Error getting statistics (async): {str(e)}")
+            # Return empty stats on error
+            return {
+                "total_unique_documents": 0,
+                "total_duplicate_instances": 0,
+                "total_cases": 0,
+                "average_duplicates_per_document": 0
+            }

@@ -39,7 +39,6 @@ class BoxClient:
     def _create_client(self) -> Client:
         """Create authenticated Box client"""
         try:
-            print(settings.box.private_key)
             auth = JWTAuth(
                 client_id=settings.box.client_id,
                 client_secret=settings.box.client_secret,

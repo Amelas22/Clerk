@@ -89,6 +89,7 @@ class Settings:
             (self.box.client_secret, "BOX_CLIENT_SECRET"),
             (self.database.supabase_url, "SUPABASE_URL"),
             (self.database.supabase_key, "SUPABASE_KEY"),
+            (self.database.supabase_service_key, "SUPABASE_SERVICE_KEY"),
             (self.openai.api_key, "OPENAI_API_KEY"),
         ]
         

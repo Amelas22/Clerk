@@ -3,21 +3,27 @@ Main document injector module.
 Orchestrates the entire document processing pipeline from Box to vector storage.
 """
 
+import os
+import sys
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
-from .document_processing.box_client import BoxClient, BoxDocument
-from .document_processing.pdf_extractor import PDFExtractor
-from .document_processing.chunker import DocumentChunker
-from .document_processing.deduplicator import DocumentDeduplicator
-from .document_processing.context_generator import ContextGenerator
-from .vector_storage.embeddings import EmbeddingGenerator
-from .vector_storage.vector_store import VectorStore
-from .vector_storage.fulltext_search import FullTextSearchManager
-from .utils.cost_tracker import CostTracker
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from src.document_processing.box_client import BoxClient, BoxDocument
+from src.document_processing.pdf_extractor import PDFExtractor
+from src.document_processing.chunker import DocumentChunker
+from src.document_processing.deduplicator import DocumentDeduplicator
+from src.document_processing.context_generator import ContextGenerator
+from src.vector_storage.embeddings import EmbeddingGenerator
+from src.vector_storage.vector_store import VectorStore
+from src.vector_storage.fulltext_search import FullTextSearchManager
+from src.utils.cost_tracker import CostTracker
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +318,7 @@ class DocumentInjector:
         logger.info(f"Failed: {self.stats['failed']}")
         
         # Get deduplication stats
-        dedup_stats = self.deduplicator.get_statistics()
+        dedup_stats = asyncio.run(self.deduplicator.get_statistics_async())
         logger.info(f"Total unique documents in system: {dedup_stats['total_unique_documents']}")
         logger.info(f"Total duplicate instances: {dedup_stats['total_duplicate_instances']}")
         logger.info("=" * 50)

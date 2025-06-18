@@ -171,11 +171,11 @@ class VectorStore:
             logger.error(f"Error deleting chunks: {str(e)}")
             raise
     
-    def get_case_statistics(self, case_name: str) -> Dict[str, Any]:
+    def get_case_statistics(self, case_name: str) -> Dict:
         """Get statistics for a specific case
         
         Args:
-            case_name: Name of the case
+            case_name: Name of the case to get statistics for
             
         Returns:
             Dictionary with case statistics
@@ -196,13 +196,21 @@ class VectorStore:
             return {
                 "case_name": case_name,
                 "total_chunks": count_result.count or 0,
-                "total_documents": len(unique_docs),
-                "document_ids": list(unique_docs)
+                "unique_documents": len(unique_docs),
+                "average_chunks_per_document": (
+                    (count_result.count or 0) / len(unique_docs) if unique_docs else 0
+                )
             }
-            
         except Exception as e:
             logger.error(f"Error getting case statistics: {str(e)}")
-            raise
+            # Return empty stats instead of crashing
+            return {
+                "case_name": case_name,
+                "total_chunks": 0,
+                "unique_documents": 0,
+                "average_chunks_per_document": 0,
+                "error": str(e)
+            }
     
     def verify_case_isolation(self, case_name: str, sample_size: int = 10) -> bool:
         """Verify that case isolation is working correctly
