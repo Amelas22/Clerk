@@ -1,0 +1,125 @@
+# Qdrant Production Configuration for Clerk Legal AI System
+# This configuration is optimized for legal document processing at scale
+
+debug: false
+log_level: INFO
+
+service:
+  # API Configuration
+  host: 0.0.0.0
+  http_port: 6333
+  grpc_port: 6334
+  max_request_size_mb: 100
+  max_workers: 0  # Use all available CPU cores
+  enable_cors: true
+  
+  # API Key is set via environment variable for security
+  # api_key: ${QDRANT_API_KEY}
+
+storage:
+  # Storage paths
+  storage_path: /qdrant/storage
+  snapshots_path: /qdrant/snapshots
+  
+  # Performance optimizations for legal documents
+  performance:
+    # WAL configuration
+    wal:
+      wal_capacity_mb: 32
+      wal_segments_ahead: 0
+    
+    # Indexing parameters optimized for 1536-dim OpenAI embeddings
+    indexing:
+      # Threshold for creating index
+      threshold_kb: 20000
+      # M parameter for HNSW graph
+      m: 32
+      # Construction parameter
+      ef_construct: 200
+      # Runtime parameter
+      ef: 100
+      # Full scan threshold
+      full_scan_threshold_kb: 10000
+      # Max indexing threads
+      max_indexing_threads: 0
+      # Payload indexing
+      payload_m: 16
+      payload_ef_construct: 100
+      
+    # Optimizer settings
+    optimizers:
+      # Deleted vectors threshold
+      deleted_threshold: 0.2
+      # Vacuum min vector number
+      vacuum_min_vector_number: 1000
+      # Default segment number
+      default_segment_number: 4
+      # Maximum segment size
+      max_segment_size_kb: 200000
+      # Memory-mapped files threshold
+      memmap_threshold_kb: 100000
+      # Indexing threshold
+      indexing_threshold_kb: 20000
+      # Flush interval
+      flush_interval_sec: 5
+      # Max optimization threads
+      max_optimization_threads: 2
+
+  # On-disk payload storage (set to false for performance)
+  on_disk_payload: false
+  
+  # Quantization config for memory efficiency
+  quantization:
+    always_ram: true
+
+cluster:
+  # Disabled by default, can be enabled for HA
+  enabled: false
+  # p2p:
+  #   port: 6335
+  # consensus:
+  #   tick_period_ms: 100
+
+# Collection defaults for legal documents
+collection_defaults:
+  # Default vector parameters
+  vectors:
+    size: 1536
+    distance: Cosine
+    hnsw_config:
+      m: 32
+      ef_construct: 200
+      full_scan_threshold: 10000
+      max_indexing_threads: 0
+      on_disk: false
+      payload_m: 16
+      payload_ef_construct: 100
+  
+  # Default quantization
+  quantization_config:
+    scalar:
+      type: int8
+      quantile: 0.95
+      always_ram: true
+  
+  # Replication
+  replication_factor: 2
+  
+  # Write consistency
+  write_consistency_factor: 2
+  
+  # Sharding
+  shard_number: 1
+  
+  # On-disk payload
+  on_disk_payload: false
+
+# Telemetry
+telemetry_disabled: true
+
+# TLS Configuration (optional)
+# tls:
+#   cert: /path/to/cert.pem
+#   key: /path/to/key.pem
+#   ca_cert: /path/to/ca.pem
+#   verify_https_client_certificate: false

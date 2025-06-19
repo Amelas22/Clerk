@@ -39,16 +39,7 @@ class BoxClient:
     def _create_client(self) -> Client:
         """Create authenticated Box client"""
         try:
-            auth = JWTAuth(
-                client_id=settings.box.client_id,
-                client_secret=settings.box.client_secret,
-                enterprise_id=settings.box.enterprise_id,
-                jwt_key_id=settings.box.jwt_key_id,
-                rsa_private_key_data=settings.box.private_key,
-                rsa_private_key_passphrase=settings.box.passphrase,
-            )
-            
-            auth.authenticate_instance()
+            auth = JWTAuth.from_settings_file('box_config.json')
             client = Client(auth)
             
             # Test connection

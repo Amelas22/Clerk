@@ -4,7 +4,7 @@ All sensitive values should be set via environment variables.
 """
 
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
@@ -23,10 +23,40 @@ class BoxConfig:
 
 @dataclass
 class DatabaseConfig:
-    """Database configuration for document tracking and deduplication"""
-    supabase_url: str = os.getenv("SUPABASE_URL", "")
-    supabase_key: str = os.getenv("SUPABASE_KEY", "")
-    supabase_service_key: str = os.getenv("SUPABASE_SERVICE_KEY", "")
+    """Legacy database configuration - no longer used"""
+    # Kept for backward compatibility during transition
+    supabase_url: str = ""
+    supabase_key: str = ""
+    supabase_service_key: str = ""
+
+@dataclass
+class QdrantConfig:
+    """Qdrant vector database configuration"""
+    host: str = os.getenv("QDRANT_HOST", "qdrant")
+    port: int = int(os.getenv("QDRANT_PORT", "6333"))
+    grpc_port: int = int(os.getenv("QDRANT_GRPC_PORT", "6334"))
+    api_key: Optional[str] = os.getenv("QDRANT_API_KEY", None)
+    https: bool = os.getenv("QDRANT_HTTPS", "false").lower() == "true"
+    timeout: int = int(os.getenv("QDRANT_TIMEOUT", "60"))
+    prefer_grpc: bool = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
+    
+    # Collection configuration
+    collection_name: str = "legal_documents"
+    hybrid_collection_name: str = "legal_documents_hybrid"
+    registry_collection_name: str = "document_registry"  # For deduplication
+    
+    # Performance settings
+    batch_size: int = 500
+    max_workers: int = 16
+    
+    # Vector configuration
+    embedding_dimensions: int = 1536  # OpenAI text-embedding-3-small
+    
+    @property
+    def url(self) -> str:
+        """Build Qdrant URL"""
+        protocol = "https" if self.https else "http"
+        return f"{protocol}://{self.host}:{self.port}"
 
 @dataclass
 class OpenAIConfig:
@@ -38,7 +68,7 @@ class OpenAIConfig:
 @dataclass
 class ChunkingConfig:
     """Document chunking configuration"""
-    target_chunk_size: int = 1100
+    target_chunk_size: int = 1200  # Increased for better context
     chunk_variance: int = 100  # +/- 100 characters
     overlap_size: int = 200
     min_chunk_size: int = 500
@@ -56,9 +86,17 @@ class ProcessingConfig:
 @dataclass
 class VectorConfig:
     """Vector database configuration"""
-    collection_name: str = "case_documents"
+    collection_name: str = "legal_documents"
     embedding_dimensions: int = 1536  # for text-embedding-3-small
-
+    
+    # Qdrant-specific settings
+    distance_metric: str = "cosine"
+    hnsw_m: int = 32  # Higher for better accuracy with legal documents
+    hnsw_ef_construct: int = 200
+    quantization_enabled: bool = True
+    quantization_type: str = "scalar"  # or "binary" for extreme compression
+    quantization_quantile: float = 0.95
+    
 @dataclass
 class CostConfig:
     """API cost tracking configuration"""
@@ -69,37 +107,53 @@ class CostConfig:
     custom_pricing: Dict[str, Any] = None
     
 class Settings:
-    """Central settings manager"""
+    """Main settings class that aggregates all configurations"""
+    
     def __init__(self):
         self.box = BoxConfig()
-        self.database = DatabaseConfig()
+        self.database = DatabaseConfig()  # Deprecated - kept for compatibility
+        self.qdrant = QdrantConfig()
         self.openai = OpenAIConfig()
         self.chunking = ChunkingConfig()
         self.processing = ProcessingConfig()
         self.vector = VectorConfig()
         self.cost = CostConfig()
         
-        # Validate required settings
-        self._validate()
+        # Legal-specific settings
+        self.legal = {
+            "enable_case_isolation": True,
+            "enable_citation_tracking": True,
+            "enable_deadline_detection": True,
+            "enable_hybrid_search": True,
+            "hybrid_search_weights": {
+                "vector": 0.7,
+                "keyword": 0.2,
+                "citation": 0.1
+            }
+        }
     
-    def _validate(self):
-        """Validate that all required settings are present"""
-        required_settings = [
-            (self.box.client_id, "BOX_CLIENT_ID"),
-            (self.box.client_secret, "BOX_CLIENT_SECRET"),
-            (self.database.supabase_url, "SUPABASE_URL"),
-            (self.database.supabase_key, "SUPABASE_KEY"),
-            (self.database.supabase_service_key, "SUPABASE_SERVICE_KEY"),
-            (self.openai.api_key, "OPENAI_API_KEY"),
-        ]
+    def validate(self) -> bool:
+        """Validate all required settings are present"""
+        errors = []
         
-        missing = [name for value, name in required_settings if not value]
+        # Check Box settings
+        if not all([self.box.client_id, self.box.client_secret]):
+            errors.append("Box API credentials missing")
         
-        if missing:
-            raise ValueError(
-                f"Missing required environment variables: {', '.join(missing)}. "
-                "Please check your .env file."
-            )
+        # Check Qdrant settings
+        if not self.qdrant.host:
+            errors.append("Qdrant host not configured")
+            
+        # Check OpenAI settings
+        if not self.openai.api_key:
+            errors.append("OpenAI API key missing")
+        
+        if errors:
+            for error in errors:
+                print(f"Configuration Error: {error}")
+            return False
+        
+        return True
 
-# Global settings instance
+# Create singleton instance
 settings = Settings()

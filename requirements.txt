@@ -1,43 +1,47 @@
 # Core dependencies
-python-dotenv
-pydantic
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+asyncio>=3.4.3
 
 # Box SDK
-boxsdk[jwt]
+boxsdk[jwt]>=3.9.0
 
-# PDF processing
-PyPDF2
-pdfplumber
-pdfminer.six
+# Document processing
+PyPDF2>=3.0.0
+pdfplumber>=0.10.0
+pypdf>=3.17.0
 
-# OpenAI
-openai
+# Qdrant vector database
+qdrant-client[fastembed]>=1.14.3
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
 
-# Supabase and vector storage
-supabase
-pgvector
+# OpenAI for embeddings
+openai>=1.0.0
 
-# Utilities
-tenacity
-numpy
+# NLP and text processing
+spacy>=3.7.0
+scikit-learn>=1.3.0
+numpy>=1.24.0
+tiktoken>=0.5.0
 
 # Async support
-asyncio
-aiohttp
+aiohttp>=3.9.0
+aiofiles>=23.0.0
 
 # Logging and monitoring
-python-json-logger
+loguru>=0.7.0
 
-# Reporting
-pandas
-openpyxl  # For Excel export
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
 
-# Development dependencies
-pytest
-pytest-asyncio
-black
-flake8
-mypy
+# Development
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+pre-commit>=3.4.0
 
-# Type hints
-types-requests
+# Optional: Legal NLP models (install separately)
+# en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0-py3-none-any.whl
