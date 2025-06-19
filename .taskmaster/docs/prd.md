@@ -114,7 +114,7 @@ This feature creates an AI-powered system for our law firm to automatically orga
 
 ### Infrastructure Setup
 - **Python 3.11+** for document processing scripts
-- **Supabase** for vector database (single collection with metadata filtering)
+- **Qdrant** for vector database (single collection with metadata filtering)
 - **Box API** for document access
 - **Ollama** for running local AI models
 - **Open WebUI** for chat interface
@@ -211,7 +211,7 @@ clerk/
 │   │
 │   ├── vector_storage/
 │   │   ├── __init__.py
-│   │   ├── supabase_client.py   # Supabase connection
+│   │   ├── qdrant_client.py     # Qdrant connection
 │   │   ├── embeddings.py        # Generate vector embeddings
 │   │   ├── indexer.py           # Store and update vectors
 │   │   └── searcher.py          # Query vectors with metadata
@@ -280,7 +280,7 @@ clerk/
 
 **Week 1: Environment Setup**
 - [ ] Set up development environment with all tools
-- [ ] Configure Supabase database with vector schema
+- [ ] Configure Qdrant database with vector schema
 - [ ] Create Box API connection and test authentication
 - [ ] Set up basic project structure and git repository
 
@@ -292,7 +292,7 @@ clerk/
 
 **Week 3: Vector Storage**
 - [ ] Implement vector embedding generation
-- [ ] Build Supabase storage with metadata
+- [ ] Build Qdrant storage with metadata
 - [ ] Create basic search functionality
 - [ ] Run initial import on 10 test cases
 
