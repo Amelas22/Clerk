@@ -1,66 +1,31 @@
 #!/usr/bin/env python
 """
-Example usage of the Clerk legal AI system with Qdrant vector database.
-Demonstrates:
-- Document processing with Qdrant storage
-- Hybrid search (vector + keyword + citation)
-- Case isolation verification
-- Performance comparison
+Updated example usage of the Clerk legal AI system with Qdrant vector database.
+This version automatically detects available case names instead of using hardcoded values.
 """
 
 import os
 import sys
 import time
 from datetime import datetime
+import argparse
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.document_injector import DocumentInjector
 from src.vector_storage import QdrantVectorStore, SparseVectorEncoder, LegalQueryAnalyzer
+from src.document_processing.qdrant_deduplicator import QdrantDocumentDeduplicator
 
 
-def demonstrate_qdrant_features():
-    """Demonstrate key Qdrant features for legal document processing"""
-    print("\n" + "="*80)
-    print("CLERK LEGAL AI - QDRANT VECTOR DATABASE DEMONSTRATION")
-    print("="*80)
-    
-    # Initialize components
-    print("\n1. Initializing Qdrant-powered document injector...")
-    injector = DocumentInjector(enable_cost_tracking=True)
-    
-    # Check Qdrant connection
-    try:
-        collections = injector.vector_store.client.get_collections()
-        print(f"✓ Connected to Qdrant")
-        print(f"  Collections: {[c.name for c in collections.collections]}")
-    except Exception as e:
-        print(f"✗ Qdrant connection failed: {str(e)}")
-        return
-    
-    # Process a sample folder
-    print("\n2. Processing sample documents...")
-    folder_id = "325242457476"  # Replace with your test folder
-    
-    start_time = time.time()
-    results = injector.process_case_folder(folder_id, max_documents=3)
-    processing_time = time.time() - start_time
-    
-    print(f"\nProcessing complete in {processing_time:.2f} seconds")
-    for result in results:
-        print(f"  - {result.file_name}: {result.status} ({result.chunks_created} chunks)")
-    
-    # Get case statistics
-    if results and results[0].status == "success":
-        case_name = results[0].case_name
-        stats = injector.vector_store.get_case_statistics(case_name)
-        print(f"\nCase statistics for '{case_name}':")
-        print(f"  Total chunks: {stats['total_chunks']}")
-        print(f"  Unique documents: {stats['unique_documents']}")
+def get_available_cases():
+    """Get all available case names from Qdrant"""
+    deduplicator = QdrantDocumentDeduplicator()
+    stats = deduplicator.get_statistics()
+    return stats.get("cases", [])
 
 
-def demonstrate_hybrid_search():
+def demonstrate_hybrid_search(case_name: str = None):
     """Demonstrate Qdrant's hybrid search capabilities"""
     print("\n" + "="*80)
     print("HYBRID SEARCH DEMONSTRATION")
@@ -72,26 +37,51 @@ def demonstrate_hybrid_search():
     query_analyzer = LegalQueryAnalyzer(sparse_encoder)
     injector = DocumentInjector()
     
-    # Test case name (use an actual case from your system)
-    case_name = "Cerrito v Test"
+    # Get available cases if not specified
+    if not case_name:
+        available_cases = get_available_cases()
+        
+        if not available_cases:
+            print("\n❌ No cases found in the system!")
+            print("Please process some documents first:")
+            print("  python -m src.document_injector --folder-id YOUR_FOLDER_ID")
+            return
+        
+        print(f"\nAvailable cases in the system:")
+        for i, case in enumerate(available_cases):
+            print(f"  {i+1}. {case}")
+        
+        # Use the first available case
+        case_name = available_cases[0]
+        print(f"\nUsing case: '{case_name}'")
+    else:
+        print(f"\nUsing specified case: '{case_name}'")
+    
+    # Verify case exists
+    case_stats = vector_store.get_case_statistics(case_name)
+    if case_stats['total_chunks'] == 0:
+        print(f"\n❌ No documents found for case '{case_name}'")
+        return
+    
+    print(f"Case has {case_stats['total_chunks']} chunks from {case_stats['unique_documents']} documents")
     
     # Example queries demonstrating different search types
     test_queries = [
         {
-            "query": "What is the purpose of the Motion about Irrelevant evidence?",
+            "query": "What are the key allegations in the complaint?",
             "type": "semantic"
         },
         {
-            "query": "Explain to me what was in the Motion about Irrelevant evidence",
-            "type": "date_search"
+            "query": "What motions have been filed in this case?",
+            "type": "semantic"
         },
         {
-            "query": "what case citations were in the Motion about Irrelevant evidence?",
-            "type": "citation_search"
-        },
-        {
-            "query": "what were the damanges?",
+            "query": "What are the damages claimed?",
             "type": "monetary_search"
+        },
+        {
+            "query": "What legal citations are mentioned?",
+            "type": "citation_search"
         }
     ]
     
@@ -118,22 +108,32 @@ def demonstrate_hybrid_search():
         print("\nSearching...")
         start_time = time.time()
         
-        results = injector.search_case(
-            case_name=case_name,
-            query=test['query'],
-            limit=5,
-            use_hybrid=True
-        )
-        
-        search_time = time.time() - start_time
-        
-        print(f"Found {len(results)} results in {search_time:.3f} seconds")
-        
-        # Display top results
-        for i, result in enumerate(results[:3], 1):
-            print(f"\n  Result {i} (Score: {result.score:.3f}):")
-            print(f"  Document: {result.metadata.get('document_name', 'Unknown')}")
-            print(f"  Content: {result.content[:200]}...")
+        try:
+            results = injector.search_case(
+                case_name=case_name,
+                query=test['query'],
+                limit=5,
+                use_hybrid=True
+            )
+            
+            search_time = time.time() - start_time
+            
+            print(f"Found {len(results)} results in {search_time:.3f} seconds")
+            
+            # Display top results
+            for i, result in enumerate(results[:3], 1):
+                print(f"\n  Result {i} (Score: {result.score:.3f}):")
+                print(f"  Document: {result.metadata.get('document_name', 'Unknown')}")
+                print(f"  Content: {result.content[:200]}...")
+                
+                # Show metadata
+                if result.metadata.get('has_citations'):
+                    print(f"  Has citations: Yes ({result.metadata.get('citation_count', 0)} found)")
+                if result.metadata.get('chunk_index') is not None:
+                    print(f"  Chunk: {result.metadata.get('chunk_index')} of document")
+                    
+        except Exception as e:
+            print(f"Error during search: {str(e)}")
 
 
 def demonstrate_case_isolation():
@@ -144,140 +144,90 @@ def demonstrate_case_isolation():
     
     vector_store = QdrantVectorStore()
     
-    # Get all unique cases (this is a simplified version)
-    print("\nVerifying case isolation...")
+    # Get all available cases
+    available_cases = get_available_cases()
     
-    # Test search across cases (should return nothing)
-    test_cases = ["Cerrito v Test", "Smith v Jones", "Doe v State"]
+    if len(available_cases) < 2:
+        print("\nNeed at least 2 cases to demonstrate isolation.")
+        print("Currently available cases:", available_cases)
+        return
     
-    for case in test_cases:
-        try:
-            stats = vector_store.get_case_statistics(case)
-            if stats['total_chunks'] > 0:
-                print(f"\n✓ Case '{case}': {stats['total_chunks']} chunks")
-                
-                # Try to search with wrong case name (should return empty)
-                wrong_case = "WRONG_CASE_NAME"
-                from src.vector_storage.embeddings import EmbeddingGenerator
-                embed_gen = EmbeddingGenerator()
-                test_embedding, _ = embed_gen.generate_embedding("test query")
-                
-                results = vector_store.search_case_documents(
-                    case_name=wrong_case,
-                    query_embedding=test_embedding,
-                    limit=10
-                )
-                
-                if len(results) == 0:
-                    print(f"  ✓ Case isolation verified - no cross-case contamination")
-                else:
-                    print(f"  ✗ WARNING: Found {len(results)} results from wrong case!")
-        except Exception as e:
-            print(f"  - Case '{case}' not found or error: {str(e)}")
-
-
-def demonstrate_performance_optimization():
-    """Demonstrate Qdrant performance optimization features"""
-    print("\n" + "="*80)
-    print("PERFORMANCE OPTIMIZATION DEMONSTRATION")
-    print("="*80)
+    print(f"\nTesting isolation between cases:")
+    print(f"  Case 1: {available_cases[0]}")
+    print(f"  Case 2: {available_cases[1] if len(available_cases) > 1 else 'N/A'}")
     
-    vector_store = QdrantVectorStore()
+    # Generate test embedding
+    from src.vector_storage.embeddings import EmbeddingGenerator
+    embed_gen = EmbeddingGenerator()
+    test_embedding, _ = embed_gen.generate_embedding("test query for case isolation")
     
-    print("\n1. Collection Information:")
-    try:
-        # Get collection info
-        info = vector_store.client.get_collection(vector_store.collection_name)
-        print(f"  Vectors count: {info.vectors_count}")
-        print(f"  Points count: {info.points_count}")
-        print(f"  Segments count: {info.segments_count}")
-        print(f"  Status: {info.status}")
-        
-        # Check configuration
-        config = info.config
-        print(f"\n2. Current Configuration:")
-        print(f"  HNSW M parameter: {config.params.hnsw_config.m}")
-        print(f"  HNSW ef_construct: {config.params.hnsw_config.ef_construct}")
-        print(f"  Quantization enabled: {config.params.quantization_config is not None}")
-        
-        if config.params.quantization_config:
-            print(f"  Quantization type: Scalar INT8")
-        
-    except Exception as e:
-        print(f"  Error getting collection info: {str(e)}")
+    # Search in Case 1
+    results_case1 = vector_store.search_case_documents(
+        case_name=available_cases[0],
+        query_embedding=test_embedding,
+        limit=5
+    )
     
-    print("\n3. Optimization Tips:")
-    print("  - Use batch upload for initial data ingestion")
-    print("  - Enable scalar quantization for 75% memory reduction")
-    print("  - Set HNSW m=32 for legal document accuracy")
-    print("  - Use gRPC for 15% better throughput")
-    print("  - Keep vectors in RAM for optimal performance")
-
-
-def demonstrate_backup_and_recovery():
-    """Demonstrate Qdrant backup capabilities"""
-    print("\n" + "="*80)
-    print("BACKUP AND RECOVERY FEATURES")
-    print("="*80)
+    # Try to search with wrong case name
+    results_wrong = vector_store.search_case_documents(
+        case_name="DEFINITELY_WRONG_CASE_NAME",
+        query_embedding=test_embedding,
+        limit=5
+    )
     
-    vector_store = QdrantVectorStore()
+    print(f"\nResults for '{available_cases[0]}': {len(results_case1)} documents")
+    print(f"Results for wrong case name: {len(results_wrong)} documents")
     
-    print("\n1. Creating collection snapshot...")
-    try:
-        # Create snapshot
-        snapshot_info = vector_store.client.create_snapshot(
-            collection_name=vector_store.collection_name
-        )
-        print(f"  ✓ Snapshot created: {snapshot_info}")
-        print("  Snapshots are stored in: /qdrant/snapshots/")
-        
-        # List snapshots
-        snapshots = vector_store.client.list_snapshots(
-            collection_name=vector_store.collection_name
-        )
-        print(f"\n2. Available snapshots: {len(snapshots)}")
-        for snapshot in snapshots[:3]:  # Show first 3
-            print(f"  - {snapshot}")
-    
-    except Exception as e:
-        print(f"  Error creating snapshot: {str(e)}")
-    
-    print("\n3. Recovery procedures:")
-    print("  - Snapshots can be used for point-in-time recovery")
-    print("  - Use Docker volumes for persistent storage")
-    print("  - Consider replication_factor=2 for redundancy")
-    print("  - Regular backups to external storage recommended")
+    if len(results_wrong) == 0:
+        print("✓ Case isolation verified - no cross-case contamination")
+    else:
+        print("✗ WARNING: Case isolation may be compromised!")
 
 
 def main():
     """Main demonstration function"""
-    print("\nCLERK LEGAL AI - QDRANT INTEGRATION DEMO")
-    print("=========================================")
+    parser = argparse.ArgumentParser(
+        description="Demonstrate Qdrant vector search for legal documents"
+    )
+    parser.add_argument(
+        "--case-name",
+        type=str,
+        help="Specific case name to search (otherwise uses first available)"
+    )
+    parser.add_argument(
+        "--list-cases",
+        action="store_true",
+        help="List all available cases and exit"
+    )
     
-    # Run demonstrations
-    demonstrate_qdrant_features()
-    demonstrate_hybrid_search()
-    demonstrate_case_isolation()
-    demonstrate_performance_optimization()
-    demonstrate_backup_and_recovery()
+    args = parser.parse_args()
     
-    print("\n" + "="*80)
-    print("DEMONSTRATION COMPLETE")
-    print("="*80)
-    print("\nKey advantages of Qdrant for legal document processing:")
-    print("- 15x faster throughput than pgvector")
-    print("- Native hybrid search combining vectors, keywords, and citations")
-    print("- Scalar quantization reduces memory usage by 75%")
-    print("- Production-ready with clustering and replication")
-    print("- Strict case isolation with metadata filtering")
-    print("- Built-in backup and recovery features")
-
-
-if __name__ == "__main__":
+    # Configure logging
     import logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
+    print("\nCLERK LEGAL AI - QDRANT VECTOR DATABASE DEMONSTRATION")
+    print("="*80)
+    
+    # List cases if requested
+    if args.list_cases:
+        cases = get_available_cases()
+        print("\nAvailable cases:")
+        for case in cases:
+            print(f"  - {case}")
+        return
+    
+    # Run demonstrations
+    demonstrate_hybrid_search(args.case_name)
+    demonstrate_case_isolation()
+    
+    print("\n" + "="*80)
+    print("DEMONSTRATION COMPLETE")
+    print("="*80)
+
+
+if __name__ == "__main__":
     main()
