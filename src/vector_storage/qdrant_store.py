@@ -81,25 +81,36 @@ class QdrantVectorStore:
             else:
                 logger.info(f"Standard collection exists: {self.collection_name}")
             
-            # Create hybrid collection if needed
-            if self.hybrid_collection_name not in collection_names:
-                self._create_hybrid_collection()
-                logger.info(f"Created hybrid collection: {self.hybrid_collection_name}")
-            else:
-                logger.info(f"Hybrid collection exists: {self.hybrid_collection_name}")
-                
+            # Create hybrid collection if needed and enabled
+            if settings.legal["enable_hybrid_search"]:
+                if self.hybrid_collection_name not in collection_names:
+                    self._create_hybrid_collection()
+                    logger.info(f"Created hybrid collection: {self.hybrid_collection_name}")
+                else:
+                    logger.info(f"Hybrid collection exists: {self.hybrid_collection_name}")
+                    
         except Exception as e:
             logger.error(f"Error ensuring collections exist: {str(e)}")
             raise
     
     def _create_standard_collection(self):
-        """Create standard vector collection optimized for legal documents"""
+        """Create standard vector collection with optimized configuration"""
+        # Prepare quantization config if enabled
+        quantization_config = None
+        if hasattr(settings.vector, 'quantization') and settings.vector.quantization:
+            quantization_config = ScalarQuantization(
+                scalar=ScalarQuantizationConfig(
+                    type=ScalarType.INT8,
+                    quantile=0.99,
+                    always_ram=True
+                )
+            )
+        
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config=VectorParams(
                 size=settings.vector.embedding_dimensions,
-                distance=Distance.COSINE,
-                on_disk=False  # Keep in RAM for performance
+                distance=Distance.COSINE
             ),
             hnsw_config=HnswConfigDiff(
                 m=settings.vector.hnsw_m,
@@ -107,32 +118,19 @@ class QdrantVectorStore:
                 on_disk=False,
                 max_indexing_threads=8
             ),
-            optimizers_config=OptimizersConfigDiff(
-                default_segment_number=4,
-                flush_interval_sec=5,
-                max_optimization_threads=2
-            ),
-            quantization_config=ScalarQuantization(
-                scalar=ScalarQuantizationConfig(
-                    type=ScalarType.INT8,
-                    quantile=settings.vector.quantization_quantile,
-                    always_ram=True
-                )
-            ) if settings.vector.quantization_enabled else None,
-            on_disk_payload=False,
-            replication_factor=2,  # Production redundancy
-            shard_number=1
+            quantization_config=quantization_config,
+            on_disk_payload=False
         )
         
         # Create payload indexes for efficient filtering
         self._create_payload_indexes(self.collection_name)
     
     def _create_hybrid_collection(self):
-        """Create hybrid collection with multiple vector types for advanced search"""
+        """Create hybrid collection with multiple vector types and sparse vectors"""
         self.client.create_collection(
             collection_name=self.hybrid_collection_name,
             vectors_config={
-                # Dense semantic vectors
+                # Main semantic embeddings
                 "semantic": VectorParams(
                     size=settings.vector.embedding_dimensions,
                     distance=Distance.COSINE
@@ -221,9 +219,13 @@ class QdrantVectorStore:
                 chunk_id = str(uuid.uuid4())
                 stored_ids.append(chunk_id)
                 
+                # Get chunk metadata safely
+                chunk_metadata = chunk.get("metadata", {})
+                
                 # Build payload with STRICT case isolation
+                # CRITICAL: case_name must be at the top level for filtering
                 payload = {
-                    # CRITICAL: Case isolation fields
+                    # Primary fields for filtering - DO NOT NEST THESE
                     "case_name": case_name,
                     "document_id": document_id,
                     
@@ -235,18 +237,16 @@ class QdrantVectorStore:
                     "chunk_index": i,
                     "chunk_id": chunk_id,
                     
-                    # Document metadata
-                    **chunk.get("metadata", {}),
-                    
                     # System metadata
                     "indexed_at": datetime.utcnow().isoformat(),
                     "vector_version": "1.0"
                 }
                 
-                # Ensure case_name is in metadata for double protection
-                if "metadata" not in payload:
-                    payload["metadata"] = {}
-                payload["metadata"]["case_name"] = case_name
+                # Add document metadata fields individually to avoid overwriting critical fields
+                # Skip case_name if it exists in metadata to prevent overwriting
+                for key, value in chunk_metadata.items():
+                    if key not in ["case_name", "document_id", "chunk_id", "chunk_index"]:
+                        payload[key] = value
                 
                 # Create point for standard collection
                 point = PointStruct(
@@ -285,6 +285,23 @@ class QdrantVectorStore:
                 keywords_sparse = chunk.get("keywords_sparse", {})
                 citations_sparse = chunk.get("citations_sparse", {})
                 
+                # Get chunk metadata safely
+                chunk_metadata = chunk.get("metadata", {})
+                
+                # Build payload - same structure as standard collection
+                payload = {
+                    # Primary fields for filtering - DO NOT NEST THESE
+                    "case_name": case_name,
+                    "document_id": document_id,
+                    "content": chunk["content"],
+                    "search_text": chunk.get("search_text", chunk["content"]),
+                }
+                
+                # Add metadata fields individually
+                for key, value in chunk_metadata.items():
+                    if key not in ["case_name", "document_id"]:
+                        payload[key] = value
+                
                 # Create hybrid point
                 point = PointStruct(
                     id=chunk_id,
@@ -292,13 +309,7 @@ class QdrantVectorStore:
                         "semantic": chunk["embedding"],
                         "legal_concepts": chunk["embedding"]  # Same for now
                     },
-                    payload={
-                        "case_name": case_name,
-                        "document_id": document_id,
-                        "content": chunk["content"],
-                        "search_text": chunk.get("search_text", chunk["content"]),
-                        **chunk.get("metadata", {})
-                    }
+                    payload=payload
                 )
                 
                 # Add sparse vectors if available
@@ -356,6 +367,9 @@ class QdrantVectorStore:
                         )
                     )
             
+            # Log filter for debugging
+            logger.debug(f"Searching with filter: case_name='{case_name}'")
+            
             # Perform search
             results = self.client.search(
                 collection_name=self.collection_name,
@@ -371,23 +385,25 @@ class QdrantVectorStore:
             search_results = []
             for point in results:
                 # CRITICAL: Double-check case isolation
-                if point.payload.get("case_name") != case_name:
+                point_case_name = point.payload.get("case_name")
+                if point_case_name != case_name:
                     logger.error(
                         f"CRITICAL: Case isolation breach detected! "
-                        f"Expected: {case_name}, Got: {point.payload.get('case_name')}"
+                        f"Expected: {case_name}, Got: {point_case_name}"
                     )
                     continue
                 
                 search_results.append(SearchResult(
                     id=str(point.id),
                     content=point.payload.get("content", ""),
-                    case_name=point.payload.get("case_name", ""),
+                    case_name=point_case_name,
                     document_id=point.payload.get("document_id", ""),
                     score=point.score,
                     metadata=point.payload,
                     search_type="vector"
                 ))
             
+            logger.debug(f"Found {len(search_results)} results for case '{case_name}'")
             return search_results
             
         except Exception as e:
@@ -442,69 +458,103 @@ class QdrantVectorStore:
                         )
                     )
             
-            # Prepare prefetch queries
-            prefetches = []
+            # Build query with fusion
+            query = FusionQuery(
+                fusion=Fusion.RRF  # Reciprocal Rank Fusion
+            )
             
-            # Semantic search
-            prefetches.append(
-                Prefetch(
-                    query=query_embedding,
-                    using="semantic",
-                    limit=limit * 2,  # Get more candidates
-                    filter=case_filter
+            # Semantic search prefetch
+            semantic_prefetch = Prefetch(
+                query=NamedVector(
+                    name="semantic",
+                    vector=query_embedding
+                ),
+                filter=case_filter,
+                limit=limit * 2,  # Get more for fusion
+                score_threshold=threshold
+            )
+            
+            # Keyword search prefetch if available
+            prefetch_queries = [semantic_prefetch]
+            
+            if keyword_indices:
+                keyword_prefetch = Prefetch(
+                    query=NamedSparseVector(
+                        name="keywords",
+                        vector=keyword_indices
+                    ),
+                    filter=case_filter,
+                    limit=limit * 2
                 )
-            )
-
-            # Perform search
+                prefetch_queries.append(keyword_prefetch)
+            
+            # Citation search prefetch if available
+            if citation_indices:
+                citation_prefetch = Prefetch(
+                    query=NamedSparseVector(
+                        name="citations",
+                        vector=citation_indices
+                    ),
+                    filter=case_filter,
+                    limit=limit * 2
+                )
+                prefetch_queries.append(citation_prefetch)
+            
+            # Perform hybrid search
             results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
+                collection_name=self.hybrid_collection_name,
+                query_vector=query,
                 query_filter=case_filter,
+                prefetch=prefetch_queries,
                 limit=limit,
-                score_threshold=threshold,
                 with_payload=True,
-                with_vectors=False  # Don't return vectors to save bandwidth
+                with_vectors=False
             )
-
+            
             # Convert to SearchResult objects
             search_results = []
             for point in results:
-                # CRITICAL: Double-check case isolation
-                if point.payload.get("case_name") != case_name:
+                # Double-check case isolation
+                point_case_name = point.payload.get("case_name")
+                if point_case_name != case_name:
                     logger.error(
-                        f"CRITICAL: Case isolation breach detected! "
-                        f"Expected: {case_name}, Got: {point.payload.get('case_name')}"
+                        f"CRITICAL: Case isolation breach in hybrid search! "
+                        f"Expected: {case_name}, Got: {point_case_name}"
                     )
                     continue
-
+                
                 search_results.append(SearchResult(
                     id=str(point.id),
                     content=point.payload.get("content", ""),
-                    case_name=point.payload.get("case_name", ""),
+                    case_name=point_case_name,
                     document_id=point.payload.get("document_id", ""),
                     score=point.score,
                     metadata=point.payload,
-                    search_type="vector"
+                    search_type="hybrid"
                 ))
-
+            
+            logger.debug(f"Hybrid search found {len(search_results)} results for case '{case_name}'")
             return search_results
-
+            
         except Exception as e:
-            logger.error(f"Error searching case documents: {str(e)}")
-            raise
-
+            logger.error(f"Error performing hybrid search: {str(e)}")
+            # Fall back to standard search
+            return self.search_case_documents(
+                case_name, query_embedding, limit, threshold=threshold, filters=filters
+            )
+    
     def delete_document_vectors(self, case_name: str, document_id: str) -> int:
-        """Delete all vectors for a specific document (for versioning)
+        """Delete all vectors for a specific document
         
         Args:
-            case_name: Case name for isolation
+            case_name: Case name (for verification)
             document_id: Document to delete
             
         Returns:
             Number of vectors deleted
         """
         try:
-            # Delete from standard collection
+            # Build filter for document within case
             standard_filter = Filter(
                 must=[
                     FieldCondition(
@@ -518,7 +568,7 @@ class QdrantVectorStore:
                 ]
             )
             
-            # Get count before deletion
+            # Count before deletion
             count_before = self.client.count(
                 collection_name=self.collection_name,
                 count_filter=standard_filter
@@ -612,54 +662,30 @@ class QdrantVectorStore:
                 collection_name=self.collection_name,
                 optimizer_config=OptimizersConfigDiff(
                     indexing_threshold=50000,
-                    flush_interval_sec=10
+                    flush_interval_sec=5,
+                    max_optimization_threads=8
                 )
             )
             
-            logger.info("Collection optimization complete")
+            # Trigger optimization
+            self.client.update_collection(
+                collection_name=self.collection_name,
+                optimizers_config=OptimizersConfigDiff(
+                    max_optimization_threads=8
+                )
+            )
+            
+            logger.info("Collection optimization completed")
             
         except Exception as e:
             logger.error(f"Error optimizing collection: {str(e)}")
+            raise
     
-    async def parallel_upload(self, documents: List[Dict[str, Any]], 
-                            batch_size: int = 500) -> int:
-        """Upload documents in parallel for better performance
-        
-        Args:
-            documents: List of documents with embeddings
-            batch_size: Size of each batch
-            
-        Returns:
-            Number of documents uploaded
-        """
-        total_uploaded = 0
-        
-        async def upload_batch(batch):
-            points = []
-            for doc in batch:
-                point = PointStruct(
-                    id=doc["id"],
-                    vector=doc["embedding"],
-                    payload=doc["payload"]
-                )
-                points.append(point)
-            
-            await self.async_client.upsert(
-                collection_name=self.collection_name,
-                points=points,
-                wait=False
-            )
-            return len(points)
-        
-        # Create batches
-        batches = [documents[i:i + batch_size] 
-                  for i in range(0, len(documents), batch_size)]
-        
-        # Upload in parallel
-        tasks = [upload_batch(batch) for batch in batches]
-        results = await asyncio.gather(*tasks)
-        
-        total_uploaded = sum(results)
-        logger.info(f"Uploaded {total_uploaded} documents in parallel")
-        
-        return total_uploaded
+    def close(self):
+        """Close client connections"""
+        try:
+            if hasattr(self.async_client, 'close'):
+                asyncio.run(self.async_client.close())
+            logger.info("Closed Qdrant connections")
+        except Exception as e:
+            logger.warning(f"Error closing connections: {str(e)}")

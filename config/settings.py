@@ -96,7 +96,9 @@ class VectorConfig:
     quantization_enabled: bool = True
     quantization_type: str = "scalar"  # or "binary" for extreme compression
     quantization_quantile: float = 0.95
-    
+    quantization: bool = True
+    quantization_quantile: float = 0.99
+
 @dataclass
 class CostConfig:
     """API cost tracking configuration"""

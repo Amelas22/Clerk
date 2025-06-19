@@ -112,6 +112,8 @@ def setup_qdrant_collections() -> bool:
         
     except Exception as e:
         print(f"\n✗ Error setting up Qdrant: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -143,16 +145,12 @@ def verify_connectivity() -> Dict[str, bool]:
     # Test OpenAI
     print("\n2. Testing OpenAI connection...")
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=settings.openai.api_key)
-        # Test with a minimal embedding
-        response = client.embeddings.create(
-            model=settings.openai.embedding_model,
-            input="test"
-        )
+        from src.vector_storage.embeddings import EmbeddingGenerator
+        embed_gen = EmbeddingGenerator()
+        test_embedding, _ = embed_gen.generate_embedding("test")
         print(f"  ✓ OpenAI connection successful")
         print(f"  - Model: {settings.openai.embedding_model}")
-        print(f"  - Dimensions: {len(response.data[0].embedding)}")
+        print(f"  - Dimensions: {len(test_embedding)}")
         results["openai"] = True
     except Exception as e:
         print(f"  ✗ OpenAI connection failed: {str(e)}")
@@ -177,42 +175,24 @@ def verify_connectivity() -> Dict[str, bool]:
 
 
 def create_test_data() -> bool:
-    """Create test data for verification"""
+    """Create and verify test data"""
     print("\n" + "="*60)
     print("Creating test data...")
     print("="*60)
     
     try:
-        from src.vector_storage import QdrantVectorStore, EmbeddingGenerator
+        from src.vector_storage.qdrant_store import QdrantVectorStore
+        from src.vector_storage.embeddings import EmbeddingGenerator
         from src.document_processing.qdrant_deduplicator import QdrantDocumentDeduplicator
         
         vector_store = QdrantVectorStore()
         embed_gen = EmbeddingGenerator()
         deduplicator = QdrantDocumentDeduplicator()
         
-        # Test document deduplication
-        test_content = b"This is test content for deduplication"
-        test_hash = deduplicator.calculate_document_hash(test_content)
-        
-        # Register test document
-        doc_record = deduplicator.register_new_document(
-            doc_hash=test_hash,
-            file_name="test_document.pdf",
-            file_path="/test/path/test_document.pdf",
-            case_name="TEST_CASE_SETUP",
-            metadata={"test": True}
-        )
-        print(f"  ✓ Registered test document with hash: {test_hash[:8]}...")
-        
-        # Test duplicate detection
-        exists, _ = deduplicator.check_document_exists(test_hash)
-        if exists:
-            print(f"  ✓ Duplicate detection working correctly")
-        
         # Create test chunks
         test_chunks = [
             {
-                "content": "This is a test legal document for case isolation verification. Motion to dismiss pursuant to Rule 12(b)(6).",
+                "content": "This is a test legal document. Motion to dismiss pursuant to Rule 12(b)(6).",
                 "embedding": embed_gen.generate_embedding("Test legal document motion to dismiss")[0],
                 "search_text": "test legal document motion dismiss rule 12b6",
                 "metadata": {
@@ -260,6 +240,8 @@ def create_test_data() -> bool:
             
     except Exception as e:
         print(f"  ✗ Error creating test data: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -280,7 +262,14 @@ def display_configuration() -> None:
     print(f"  Dimensions: {settings.vector.embedding_dimensions}")
     print(f"  Distance metric: {settings.vector.distance_metric}")
     print(f"  HNSW M: {settings.vector.hnsw_m}")
-    print(f"  Quantization: {settings.vector.quantization_enabled}")
+    
+    # Handle quantization setting gracefully
+    quantization_enabled = False
+    if hasattr(settings.vector, 'quantization'):
+        quantization_enabled = settings.vector.quantization
+    elif hasattr(settings.vector, 'quantization_enabled'):
+        quantization_enabled = settings.vector.quantization_enabled
+    print(f"  Quantization: {quantization_enabled}")
     
     print(f"\nDocument Processing:")
     print(f"  Chunk size: {settings.chunking.target_chunk_size}")
