@@ -52,7 +52,7 @@ def demonstrate_hybrid_search(case_name: str = None):
             print(f"  {i+1}. {case}")
         
         # Use the first available case
-        case_name = available_cases[0]
+        case_name = "Cerrtio v Test"
         print(f"\nUsing case: '{case_name}'")
     else:
         print(f"\nUsing specified case: '{case_name}'")
