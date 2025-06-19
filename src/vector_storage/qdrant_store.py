@@ -15,10 +15,10 @@ from qdrant_client import QdrantClient, AsyncQdrantClient
 from qdrant_client.http import models
 from qdrant_client.models import (
     Distance, VectorParams, HnswConfigDiff, OptimizersConfigDiff,
-    PointStruct, Filter, FieldCondition, MatchValue, SearchRequest,
+    PointStruct, Filter, FieldCondition, MatchValue,
     ScalarQuantization, ScalarQuantizationConfig, ScalarType,
     SparseVectorParams, SparseIndexParams, NamedVector, NamedSparseVector,
-    Prefetch, FusionQuery, Fusion
+    QueryRequest, SparseVector
 )
 
 from config.settings import settings
@@ -302,21 +302,39 @@ class QdrantVectorStore:
                     if key not in ["case_name", "document_id"]:
                         payload[key] = value
                 
-                # Create hybrid point
+                # Prepare sparse vectors with proper formatting
+                sparse_vectors = {}
+                
+                # Format keywords sparse vector if available
+                if keywords_sparse:
+                    sparse_vectors["keywords"] = {
+                        "indices": [int(idx) for idx in keywords_sparse.keys()],
+                        "values": [float(val) for val in keywords_sparse.values()]
+                    }
+                else:
+                    # Provide empty sparse vector structure
+                    sparse_vectors["keywords"] = {"indices": [], "values": []}
+                
+                # Format citations sparse vector if available
+                if citations_sparse:
+                    sparse_vectors["citations"] = {
+                        "indices": [int(idx) for idx in citations_sparse.keys()],
+                        "values": [float(val) for val in citations_sparse.values()]
+                    }
+                else:
+                    # Provide empty sparse vector structure
+                    sparse_vectors["citations"] = {"indices": [], "values": []}
+                
+                # Create hybrid point with vectors in dictionary format
                 point = PointStruct(
                     id=chunk_id,
                     vector={
                         "semantic": chunk["embedding"],
-                        "legal_concepts": chunk["embedding"]  # Same for now
+                        "legal_concepts": chunk["embedding"],  # Same for now
+                        **sparse_vectors  # Add sparse vectors
                     },
                     payload=payload
                 )
-                
-                # Add sparse vectors if available
-                if keywords_sparse:
-                    point.vector["keywords"] = keywords_sparse
-                if citations_sparse:
-                    point.vector["citations"] = citations_sparse
                 
                 hybrid_points.append(point)
             
@@ -417,131 +435,45 @@ class QdrantVectorStore:
                      limit: int = 10,
                      filters: Optional[Dict[str, Any]] = None,
                      threshold: float = 0.7) -> List[SearchResult]:
-        """Perform hybrid search combining semantic, keyword, and citation matching
-        
-        Args:
-            case_name: Name of the case to search within (CRITICAL)
-            query_text: Original query text
-            query_embedding: Dense query vector
-            keyword_indices: Sparse vector for keyword matching
-            citation_indices: Sparse vector for citation matching
-            limit: Maximum number of results
-            filters: Additional filters
-            threshold: Minimum similarity threshold
-            
-        Returns:
-            List of search results ranked by combined score
-        """
-        if not settings.legal["enable_hybrid_search"]:
-            # Fall back to standard vector search
-            return self.search_case_documents(
-                case_name, query_embedding, limit, threshold=threshold, filters=filters
-            )
-        
-        try:
-            # Build case isolation filter
-            case_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="case_name",
-                        match=MatchValue(value=case_name)
-                    )
-                ]
-            )
-            
-            if filters:
-                for key, value in filters.items():
-                    case_filter.must.append(
-                        FieldCondition(
-                            key=key,
-                            match=MatchValue(value=value)
+        """Perform hybrid search combining semantic, keyword, and citation matching"""
+        # For now, revert to standard search until we fix hybrid
+        return self.search_case_documents(
+            case_name, query_embedding, limit, threshold=threshold, filters=filters
+        )
+    
+    def _combine_search_results(self, results: List, limit: int):
+        """Combine search results by sorting by score, handling both ScoredPoint and tuples"""
+        # Convert tuples to ScoredPoint if necessary
+        from qdrant_client.models import ScoredPoint
+        converted_results = []
+        for item in results:
+            if isinstance(item, ScoredPoint):
+                converted_results.append(item)
+            elif isinstance(item, tuple):
+                # Try to convert tuple to ScoredPoint
+                # Assuming the tuple has the same order as ScoredPoint fields
+                if len(item) >= 6:
+                    # We'll create a ScoredPoint object from the tuple
+                    try:
+                        scored_point = ScoredPoint(
+                            id=item[0],
+                            version=item[1],
+                            score=item[2],
+                            payload=item[3],
+                            vector=item[4] if len(item) > 4 else None,
+                            vector_name=item[5] if len(item) > 5 else None
                         )
-                    )
-            
-            # Build query with fusion
-            query = FusionQuery(
-                fusion=Fusion.RRF  # Reciprocal Rank Fusion
-            )
-            
-            # Semantic search prefetch
-            semantic_prefetch = Prefetch(
-                query=NamedVector(
-                    name="semantic",
-                    vector=query_embedding
-                ),
-                filter=case_filter,
-                limit=limit * 2,  # Get more for fusion
-                score_threshold=threshold
-            )
-            
-            # Keyword search prefetch if available
-            prefetch_queries = [semantic_prefetch]
-            
-            if keyword_indices:
-                keyword_prefetch = Prefetch(
-                    query=NamedSparseVector(
-                        name="keywords",
-                        vector=keyword_indices
-                    ),
-                    filter=case_filter,
-                    limit=limit * 2
-                )
-                prefetch_queries.append(keyword_prefetch)
-            
-            # Citation search prefetch if available
-            if citation_indices:
-                citation_prefetch = Prefetch(
-                    query=NamedSparseVector(
-                        name="citations",
-                        vector=citation_indices
-                    ),
-                    filter=case_filter,
-                    limit=limit * 2
-                )
-                prefetch_queries.append(citation_prefetch)
-            
-            # Perform hybrid search
-            results = self.client.search(
-                collection_name=self.hybrid_collection_name,
-                query_vector=query,
-                query_filter=case_filter,
-                prefetch=prefetch_queries,
-                limit=limit,
-                with_payload=True,
-                with_vectors=False
-            )
-            
-            # Convert to SearchResult objects
-            search_results = []
-            for point in results:
-                # Double-check case isolation
-                point_case_name = point.payload.get("case_name")
-                if point_case_name != case_name:
-                    logger.error(
-                        f"CRITICAL: Case isolation breach in hybrid search! "
-                        f"Expected: {case_name}, Got: {point_case_name}"
-                    )
-                    continue
-                
-                search_results.append(SearchResult(
-                    id=str(point.id),
-                    content=point.payload.get("content", ""),
-                    case_name=point_case_name,
-                    document_id=point.payload.get("document_id", ""),
-                    score=point.score,
-                    metadata=point.payload,
-                    search_type="hybrid"
-                ))
-            
-            logger.debug(f"Hybrid search found {len(search_results)} results for case '{case_name}'")
-            return search_results
-            
-        except Exception as e:
-            logger.error(f"Error performing hybrid search: {str(e)}")
-            # Fall back to standard search
-            return self.search_case_documents(
-                case_name, query_embedding, limit, threshold=threshold, filters=filters
-            )
+                        converted_results.append(scored_point)
+                    except Exception as e:
+                        logger.error(f"Error converting tuple to ScoredPoint: {e}")
+                else:
+                    logger.error(f"Cannot convert tuple to ScoredPoint: insufficient fields")
+            else:
+                logger.error(f"Unsupported result type: {type(item)}")
+        
+        # Sort by score
+        sorted_results = sorted(converted_results, key=lambda x: x.score, reverse=True)
+        return sorted_results[:limit]
     
     def delete_document_vectors(self, case_name: str, document_id: str) -> int:
         """Delete all vectors for a specific document

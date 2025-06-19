@@ -16,10 +16,36 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.document_injector import DocumentInjector
 from src.vector_storage import QdrantVectorStore, SparseVectorEncoder, LegalQueryAnalyzer
 from src.document_processing.qdrant_deduplicator import QdrantDocumentDeduplicator
+from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, MatchValue, PayloadSchemaType
+
+
+def ensure_case_name_index():
+    """Ensure the case_name index exists in Qdrant"""
+    client = QdrantClient()
+    try:
+        client.create_payload_index(
+            collection_name="legal_documents",
+            field_name="case_name",
+            field_schema=PayloadSchemaType.KEYWORD
+        )
+        print("✓ Created case_name index successfully!")
+        return True
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            print("✓ case_name index already exists")
+            return True
+        else:
+            print(f"✗ Error creating index: {str(e)}")
+            return False
 
 
 def get_available_cases():
     """Get all available case names from Qdrant"""
+    # First ensure the index exists
+    ensure_case_name_index()
+    
+    # Then get cases
     deduplicator = QdrantDocumentDeduplicator()
     stats = deduplicator.get_statistics()
     return stats.get("cases", [])
@@ -58,10 +84,39 @@ def demonstrate_hybrid_search(case_name: str = None):
         print(f"\nUsing specified case: '{case_name}'")
     
     # Verify case exists
-    case_stats = vector_store.get_case_statistics(case_name)
-    if case_stats['total_chunks'] == 0:
+    client = QdrantClient()
+    case_filter = Filter(
+        must=[
+            FieldCondition(
+                key="case_name",
+                match=MatchValue(value=case_name)
+            )
+        ]
+    )
+    
+    count = client.count(
+        collection_name="legal_documents",
+        count_filter=case_filter
+    )
+    
+    if count.count == 0:
         print(f"\n❌ No documents found for case '{case_name}'")
-        return
+        print("Checking if index exists...")
+        ensure_case_name_index()
+        
+        # Try again after ensuring index
+        count = client.count(
+            collection_name="legal_documents",
+            count_filter=case_filter
+        )
+        
+        if count.count == 0:
+            print(f"Still no documents found for case '{case_name}' after index check")
+            return
+        else:
+            print(f"✓ Found {count.count} documents after creating index!")
+    
+    case_stats = vector_store.get_case_statistics(case_name)
     
     print(f"Case has {case_stats['total_chunks']} chunks from {case_stats['unique_documents']} documents")
     
@@ -184,6 +239,19 @@ def demonstrate_case_isolation():
         print("✗ WARNING: Case isolation may be compromised!")
 
 
+def verify_indexes():
+    """Verify that all required indexes exist"""
+    print("\n" + "="*80)
+    print("VERIFYING REQUIRED INDEXES")
+    print("="*80)
+    
+    # Check case_name index
+    if ensure_case_name_index():
+        print("✓ case_name index is ready")
+    else:
+        print("✗ Failed to create case_name index")
+
+
 def main():
     """Main demonstration function"""
     parser = argparse.ArgumentParser(
@@ -219,6 +287,9 @@ def main():
         for case in cases:
             print(f"  - {case}")
         return
+    
+    # Verify indexes first
+    verify_indexes()
     
     # Run demonstrations
     demonstrate_hybrid_search(args.case_name)

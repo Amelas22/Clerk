@@ -284,26 +284,49 @@ class QdrantDocumentDeduplicator:
             List of document records
         """
         try:
-            results = self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="case_name",
-                            match=MatchValue(value=case_name)
-                        )
-                    ]
-                ),
-                limit=1000,  # Adjust based on expected case size
-                with_payload=True,
-                with_vectors=False
-            )
-            
+            # Use scroll with proper offset handling
             documents = []
-            for batch in results:
-                for point in batch:
-                    documents.append(point.payload)
+            offset = None
             
+            while True:
+                # The scroll method returns a tuple of (batch, offset)
+                scroll_result = self.client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="case_name",
+                                match=MatchValue(value=case_name)
+                            )
+                        ]
+                    ),
+                    limit=100,  # Process in smaller batches
+                    offset=offset,  # Pass the offset for pagination
+                    with_payload=True,
+                    with_vectors=False
+                )
+                
+                # Check if we got a valid response
+                if not scroll_result or len(scroll_result) < 2:
+                    logger.warning(f"Unexpected scroll response format for case {case_name}")
+                    break
+                
+                batch, new_offset = scroll_result
+                
+                # Add points from this batch to our result
+                if batch:
+                    for point in batch:
+                        if hasattr(point, 'payload') and point.payload:
+                            documents.append(point.payload)
+                
+                # If no new offset or empty batch, we're done
+                if new_offset is None or not batch:
+                    break
+                
+                # Update offset for next iteration
+                offset = new_offset
+            
+            logger.debug(f"Retrieved {len(documents)} documents for case {case_name}")
             return documents
             
         except Exception as e:

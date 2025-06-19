@@ -15,7 +15,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.document_injector import DocumentInjector
-from src.vector_storage import FullTextSearchManager, EmbeddingGenerator, VectorStore
+from src.vector_storage import EmbeddingGenerator, QdrantVectorStore
 from src.document_processing import DocumentDeduplicator
 
 
@@ -71,7 +71,7 @@ def demonstrate_hybrid_search(case_name: str):
     print("="*80)
     
     # Initialize search components
-    search_manager = FullTextSearchManager()
+    search_manager = QdrantVectorStore()
     embedding_gen = EmbeddingGenerator()
     
     # Example: Legal document search
@@ -80,11 +80,6 @@ def demonstrate_hybrid_search(case_name: str):
     
     query = "What counts were filed in this complaint?"
     print(f"Query: {query}")
-    
-    # Analyze query
-    analysis = search_manager.analyze_search_query(query)
-    print(f"Query type: {analysis['query_type']}")
-    print(f"Important terms: {analysis['important_terms']}")
     
     # Generate embedding
     query_embedding, tokens = embedding_gen.generate_embedding(query)
@@ -95,9 +90,7 @@ def demonstrate_hybrid_search(case_name: str):
         case_name=case_name,
         query_text=query,
         query_embedding=query_embedding,
-        limit=5,
-        vector_weight=0.6,  # Balanced approach
-        text_weight=0.4
+        limit=5
     )
     
     print(f"\nFound {len(results)} results:")
@@ -107,8 +100,8 @@ def demonstrate_hybrid_search(case_name: str):
         print(f"   Document: {result.metadata.get('document_name', 'Unknown')}")
         print(f"   Preview: {result.content[:200]}...")
     
-    # Example: Medical record search
-    print("\n\n2. Medical Record Search")
+    # Example 2
+    print("\n\n2. Hybrid Search")
     print("-" * 40)
     
     query = "What did we say about the toxicology?"
@@ -116,14 +109,11 @@ def demonstrate_hybrid_search(case_name: str):
     
     query_embedding, tokens = embedding_gen.generate_embedding(query)
     
-    # Use higher vector weight for medical terminology
     results = search_manager.hybrid_search(
         case_name=case_name,
         query_text=query,
         query_embedding=query_embedding,
-        limit=5,
-        vector_weight=0.8,  # Higher weight on semantic similarity
-        text_weight=0.2
+        limit=5
     )
     
     print(f"\nFound {len(results)} results:")
@@ -141,14 +131,11 @@ def demonstrate_hybrid_search(case_name: str):
     
     query_embedding, tokens = embedding_gen.generate_embedding(query)
     
-    # Use higher text weight for specific amounts and dates
     results = search_manager.hybrid_search(
         case_name=case_name,
         query_text=query,
         query_embedding=query_embedding,
-        limit=5,
-        vector_weight=0.3,  # Lower weight on semantics
-        text_weight=0.7     # Higher weight on exact matches
+        limit=5
     )
     
     print(f"\nFound {len(results)} results:")
@@ -164,7 +151,7 @@ def verify_case_isolation():
     print("CASE ISOLATION VERIFICATION")
     print("="*80)
     
-    vector_store = VectorStore()
+    vector_store = QdrantVectorStore()
     
     # Get list of cases
     cases = ["Cerrito v Test"]
@@ -259,17 +246,15 @@ def main():
     injector, results = demonstrate_document_processing()
     
     # 2. Demonstrate hybrid search (use a case from the results)
-    if results and any(r.status == "success" for r in results):
-        case_name = next(r.case_name for r in results if r.status == "success")
-        demonstrate_hybrid_search(case_name)
+    demonstrate_hybrid_search("Cerrito v Test")
     
-    # 3. Verify case isolation
-    verify_case_isolation()
+    # # 3. Verify case isolation
+    # verify_case_isolation()
     
-    # 4. Check deduplication statistics
-    check_deduplication_stats()
+    # # 4. Check deduplication statistics
+    # check_deduplication_stats()
     
-    # 5. Generate comprehensive report
+    # # 5. Generate comprehensive report
     generate_comprehensive_report(injector)
     
     print("\n" + "="*80)
