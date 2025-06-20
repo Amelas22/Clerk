@@ -54,7 +54,7 @@ The document injector component of the Clerk legal AI system. This module proces
 - **Smart Chunking**: Creates ~1100 character chunks with 200 character overlap
 - **Contextual Enhancement**: Uses LLM to add contextual summaries to each chunk
 - **Hybrid Search**: Combines vector similarity with full-text search for better results
-- **Vector Storage**: Stores embeddings in Supabase with pgvector
+- **Vector Storage**: Stores embeddings in Qdrant
 - **Case Isolation**: Strict metadata filtering ensures case data never mixes
 - **Cost Tracking**: Detailed tracking of API usage and costs per document
 
@@ -88,10 +88,14 @@ BOX_JWT_KEY_ID=your_jwt_key_id
 BOX_PRIVATE_KEY="-----BEGIN ENCRYPTED PRIVATE KEY-----\n...\n-----END ENCRYPTED PRIVATE KEY-----"
 BOX_PASSPHRASE=your_private_key_passphrase
 
-# Supabase Configuration
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_anon_key
-SUPABASE_SERVICE_KEY=your_service_role_key
+# Qdrant Configuration
+QDRANT_HOST=your_qdrant_host
+QDRANT_PORT=your_qdrant_port
+QDRANT_GRPC_PORT=your_qdrant_grpc_port
+QDRANT_API_KEY=your_qdrant_api_key
+QDRANT_HTTPS=your_qdrant_https
+QDRANT_TIMEOUT=your_qdrant_timeout
+QDRANT_PREFER_GRPC=your_qdrant_prefer_grpc
 
 # OpenAI Configuration
 OPENAI_API_KEY=your_openai_api_key
@@ -104,7 +108,7 @@ CONTEXT_LLM_MODEL=gpt-3.5-turbo  # or gpt-4 for better contexts
 
 ### 2. Database Setup
 
-Run the migration script in your Supabase SQL editor:
+Run the migration script in your Qdrant SQL editor:
 
 ```sql
 -- See migrations/001_hybrid_search_setup.sql for the complete setup
@@ -244,7 +248,7 @@ python -m src.document_injector --folder-id 123456789 --max-documents 10
 4. **Chunking**: Splits into ~1100 char chunks with semantic boundaries
 5. **Context Generation**: LLM adds contextual summary to each chunk
 6. **Embedding**: OpenAI text-embedding-3-small creates vectors
-7. **Storage**: Vectors stored in Supabase with case metadata
+7. **Storage**: Vectors stored in Qdrant with case metadata
 
 ### Case Isolation
 
@@ -306,8 +310,8 @@ case_stats = injector.vector_store.get_case_statistics("Smith v. Jones")
    - Check Box app configuration
    - Ensure service account has folder access
 
-2. **Supabase Connection Error**
-   - Verify Supabase URL and keys
+2. **Qdrant Connection Error**
+   - Verify Qdrant URL and keys
    - Check if tables are created
    - Ensure pgvector extension is enabled
 

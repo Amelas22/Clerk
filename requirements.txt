@@ -45,3 +45,17 @@ pre-commit>=3.4.0
 
 # Optional: Legal NLP models (install separately)
 # en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0-py3-none-any.whl
+
+# PydanticAI Dependencies for Legal Document Agent
+# Core PydanticAI and AI model dependencies
+
+# PydanticAI - AI agent framework
+pydantic-ai>=0.0.14
+pydantic>=2.8.0
+
+# OpenAI client for language models
+openai>=1.45.0
+
+# FastAPI for OpenWebUI function integration
+fastapi>=0.115.0
+uvicorn>=0.30.0

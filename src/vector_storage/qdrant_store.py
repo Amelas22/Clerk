@@ -428,18 +428,61 @@ class QdrantVectorStore:
             logger.error(f"Error searching case documents: {str(e)}")
             raise
     
-    def hybrid_search(self, case_name: str, query_text: str,
-                     query_embedding: List[float],
-                     keyword_indices: Optional[Dict[int, float]] = None,
-                     citation_indices: Optional[Dict[int, float]] = None,
-                     limit: int = 10,
-                     filters: Optional[Dict[str, Any]] = None,
-                     threshold: float = 0.7) -> List[SearchResult]:
-        """Perform hybrid search combining semantic, keyword, and citation matching"""
-        # For now, revert to standard search until we fix hybrid
-        return self.search_case_documents(
-            case_name, query_embedding, limit, threshold=threshold, filters=filters
+    def hybrid_search(self, query: str, case_name: str, limit: int = 5) -> List[SearchResult]:
+        """Perform hybrid search using both dense and sparse vectors"""
+        # Generate embeddings
+        dense_embedding = self.embedding_generator.generate_embeddings([query])[0]
+        sparse_embedding = self.embedding_generator.generate_sparse_embedding(query)
+        
+        # Build the query
+        query_request = models.QueryRequest(
+            vector=models.NamedVector(
+                name="dense",
+                vector=dense_embedding,
+            ),
+            sparse_vector=models.SparseVector(
+                name="sparse",
+                vector=models.SparseVector(
+                    indices=sparse_embedding.indices,
+                    values=sparse_embedding.values,
+                )
+            ),
+            limit=limit,
+            with_payload=True,
+            with_vector=False,
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="metadata.case_name",
+                        match=models.MatchValue(value=case_name)
+                    )
+                ]
+            )
         )
+        
+        # Execute the query
+        results = self.client.search(
+            collection_name=self.hybrid_collection_name,
+            query_request=query_request
+        )
+        
+        return self._process_results(results)
+    
+    def _process_results(self, results):
+        # Convert to SearchResult objects
+        search_results = []
+        for point in results:
+            search_results.append(SearchResult(
+                id=str(point.id),
+                content=point.payload.get("content", ""),
+                case_name=point.payload.get("case_name", ""),
+                document_id=point.payload.get("document_id", ""),
+                score=point.score,
+                metadata=point.payload,
+                search_type="hybrid"
+            ))
+        
+        return search_results
     
     def _combine_search_results(self, results: List, limit: int):
         """Combine search results by sorting by score, handling both ScoredPoint and tuples"""

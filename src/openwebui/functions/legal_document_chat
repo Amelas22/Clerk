@@ -1,0 +1,364 @@
+"""
+OpenWebUI Function for Legal Document Chat
+Integrates PydanticAI legal agent with OpenWebUI interface
+"""
+
+import json
+import asyncio
+import logging
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+from fastapi import HTTPException
+
+# Import our legal agent
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+
+from ai_agents.legal_document_agent import legal_document_agent, LegalResponse
+
+
+class Tools:
+    """Legal Document Chat Tools for OpenWebUI"""
+    
+    class Valves(BaseModel):
+        """Configuration settings for the legal chat function"""
+        
+        # API Configuration
+        openai_api_key: str = Field(
+            default="",
+            description="OpenAI API key for the underlying AI model"
+        )
+        
+        # Case Access Control
+        allowed_case_name: str = Field(
+            default="Cerrtio v Test",
+            description="The case name this function is allowed to access"
+        )
+        
+        # Response Configuration
+        max_sources: int = Field(
+            default=5,
+            description="Maximum number of document sources to include in responses"
+        )
+        
+        min_confidence_threshold: float = Field(
+            default=0.3,
+            description="Minimum confidence threshold for responses (0.0-1.0)"
+        )
+        
+        # Feature Toggles
+        enable_citations: bool = Field(
+            default=True,
+            description="Enable citation events in OpenWebUI"
+        )
+        
+        enable_follow_ups: bool = Field(
+            default=True,
+            description="Enable suggested follow-up questions"
+        )
+        
+        # Security
+        require_authentication: bool = Field(
+            default=True,
+            description="Require user authentication for queries"
+        )
+        
+        # Logging
+        log_level: str = Field(
+            default="INFO",
+            description="Logging level (DEBUG, INFO, WARNING, ERROR)"
+        )
+    
+    def __init__(self):
+        """Initialize the legal document chat tools"""
+        self.valves = self.Valves()
+        
+        # Configure logging
+        logging.basicConfig(level=getattr(logging, self.valves.log_level))
+        self.logger = logging.getLogger(__name__)
+        
+        # Disable built-in citations since we'll emit custom ones
+        self.citation = False
+        
+        self.logger.info(f"Legal Document Chat initialized for case: {self.valves.allowed_case_name}")
+    
+    async def query_legal_documents(
+        self,
+        query: str,
+        __user__: Optional[Dict] = None,
+        __event_emitter__=None
+    ) -> str:
+        """
+        Query legal documents using AI with strict case isolation.
+        
+        Args:
+            query: The user's legal question
+            __user__: User information from OpenWebUI
+            __event_emitter__: Event emitter for citations and status updates
+            
+        Returns:
+            AI-generated response with legal analysis
+        """
+        try:
+            # Validate user if required
+            if self.valves.require_authentication and not __user__:
+                return "Authentication required to access legal documents."
+            
+            user_id = __user__.get("id", "anonymous") if __user__ else "anonymous"
+            user_name = __user__.get("name", "Unknown") if __user__ else "Unknown"
+            
+            # Emit status update
+            if __event_emitter__:
+                await __event_emitter__({
+                    "type": "status",
+                    "data": {
+                        "description": "Searching legal documents...",
+                        "done": False
+                    }
+                })
+            
+            self.logger.info(f"Processing legal query from user {user_name} ({user_id}): {query[:100]}...")
+            
+            # Query the legal agent
+            response: LegalResponse = await legal_document_agent.query_documents(
+                user_query=query,
+                user_id=user_id
+            )
+            
+            # Check confidence threshold
+            if response.confidence < self.valves.min_confidence_threshold:
+                self.logger.warning(f"Low confidence response: {response.confidence}")
+                low_confidence_warning = (
+                    f"\n\n⚠️ **Low Confidence Warning**: This response has a confidence score of "
+                    f"{response.confidence:.2f}, which is below the threshold of "
+                    f"{self.valves.min_confidence_threshold}. Please verify this information independently."
+                )
+            else:
+                low_confidence_warning = ""
+            
+            # Emit citations if enabled
+            if self.valves.enable_citations and __event_emitter__ and response.sources:
+                limited_sources = response.sources[:self.valves.max_sources]
+                
+                for source in limited_sources:
+                    try:
+                        await __event_emitter__({
+                            "type": "citation",
+                            "data": {
+                                "document": [source.excerpt],
+                                "metadata": [{
+                                    "source": source.document_name,
+                                    "document_id": source.document_id,
+                                    "page_number": source.page_number,
+                                    "relevance_score": source.relevance_score,
+                                    "date_accessed": datetime.now().isoformat()
+                                }],
+                                "source": {
+                                    "name": f"{source.document_name} (Score: {source.relevance_score:.3f})",
+                                    "url": f"#document-{source.document_id}"
+                                }
+                            }
+                        })
+                    except Exception as citation_error:
+                        self.logger.error(f"Error emitting citation: {citation_error}")
+            
+            # Build the response text
+            response_text = f"## Legal Analysis\n\n{response.answer}"
+            
+            # Add confidence indicator
+            confidence_emoji = "🟢" if response.confidence >= 0.8 else "🟡" if response.confidence >= 0.6 else "🔴"
+            response_text += f"\n\n**Confidence**: {confidence_emoji} {response.confidence:.1%}"
+            
+            # Add sources summary
+            if response.sources:
+                response_text += f"\n\n**Sources**: {len(response.sources)} document(s) referenced"
+                
+                # Add source list
+                sources_list = "\n".join([
+                    f"- {source.document_name} (Relevance: {source.relevance_score:.3f})"
+                    for source in response.sources[:self.valves.max_sources]
+                ])
+                response_text += f"\n\n### Document Sources:\n{sources_list}"
+            
+            # Add legal disclaimers
+            if response.legal_disclaimers:
+                disclaimers = "\n".join([f"- {disclaimer}" for disclaimer in response.legal_disclaimers])
+                response_text += f"\n\n### Legal Disclaimers:\n{disclaimers}"
+            
+            # Add suggested follow-ups
+            if self.valves.enable_follow_ups and response.suggested_follow_ups:
+                follow_ups = "\n".join([f"- {question}" for question in response.suggested_follow_ups])
+                response_text += f"\n\n### Suggested Follow-up Questions:\n{follow_ups}"
+            
+            # Add low confidence warning if needed
+            response_text += low_confidence_warning
+            
+            # Emit completion status
+            if __event_emitter__:
+                await __event_emitter__({
+                    "type": "status",
+                    "data": {
+                        "description": "Legal analysis complete",
+                        "done": True
+                    }
+                })
+            
+            self.logger.info(f"Successfully processed query with {len(response.sources)} sources")
+            return response_text
+            
+        except Exception as e:
+            error_msg = f"Error processing legal query: {str(e)}"
+            self.logger.error(error_msg)
+            
+            if __event_emitter__:
+                await __event_emitter__({
+                    "type": "status",
+                    "data": {
+                        "description": f"Error: {str(e)}",
+                        "done": True
+                    }
+                })
+            
+            return f"❌ **Error**: I encountered an issue while processing your legal query: {str(e)}\n\nPlease try rephrasing your question or contact support if the issue persists."
+    
+    async def get_case_summary(
+        self,
+        __user__: Optional[Dict] = None,
+        __event_emitter__=None
+    ) -> str:
+        """
+        Get a comprehensive summary of the current case.
+        
+        Args:
+            __user__: User information from OpenWebUI
+            __event_emitter__: Event emitter for status updates
+            
+        Returns:
+            Comprehensive case summary
+        """
+        try:
+            if self.valves.require_authentication and not __user__:
+                return "Authentication required to access case summary."
+            
+            user_id = __user__.get("id", "anonymous") if __user__ else "anonymous"
+            
+            if __event_emitter__:
+                await __event_emitter__({
+                    "type": "status",
+                    "data": {
+                        "description": "Generating case summary...",
+                        "done": False
+                    }
+                })
+            
+            # Get case summary from agent
+            response: LegalResponse = await legal_document_agent.get_case_summary(user_id)
+            
+            # Format the summary
+            summary_text = f"## Case Summary: {self.valves.allowed_case_name}\n\n{response.answer}"
+            
+            # Add metadata
+            if response.sources:
+                summary_text += f"\n\n**Analysis based on {len(response.sources)} documents**"
+            
+            # Add disclaimers
+            if response.legal_disclaimers:
+                disclaimers = "\n".join([f"- {disclaimer}" for disclaimer in response.legal_disclaimers])
+                summary_text += f"\n\n### Important Notes:\n{disclaimers}"
+            
+            if __event_emitter__:
+                await __event_emitter__({
+                    "type": "status",
+                    "data": {
+                        "description": "Case summary generated",
+                        "done": True
+                    }
+                })
+            
+            return summary_text
+            
+        except Exception as e:
+            error_msg = f"Error generating case summary: {str(e)}"
+            self.logger.error(error_msg)
+            return f"❌ **Error**: {error_msg}"
+    
+    async def get_system_status(
+        self,
+        __user__: Optional[Dict] = None
+    ) -> str:
+        """
+        Get the health status of the legal document system.
+        
+        Args:
+            __user__: User information from OpenWebUI
+            
+        Returns:
+            System health status
+        """
+        try:
+            # Check if user has admin privileges (you can customize this logic)
+            is_admin = __user__ and __user__.get("role") == "admin" if __user__ else False
+            
+            if not is_admin:
+                return "Administrative privileges required to view system status."
+            
+            # Get health status from agent
+            health_status = legal_document_agent.get_health_status()
+            
+            # Format status response
+            status_emoji = "✅" if health_status["status"] == "healthy" else "❌"
+            status_text = f"## System Status {status_emoji}\n\n"
+            status_text += f"**Overall Status**: {health_status['status'].title()}\n"
+            status_text += f"**Allowed Case**: {health_status['allowed_case']}\n"
+            status_text += f"**Case Accessible**: {'Yes' if health_status['case_accessible'] else 'No'}\n"
+            status_text += f"**Vector Store**: {'Healthy' if health_status['vector_store_healthy'] else 'Unhealthy'}\n"
+            
+            # Add case statistics if available
+            if "case_statistics" in health_status:
+                stats = health_status["case_statistics"]
+                status_text += f"\n### Case Statistics:\n"
+                status_text += f"- **Documents**: {stats.get('unique_documents', 'Unknown')}\n"
+                status_text += f"- **Chunks**: {stats.get('total_chunks', 'Unknown')}\n"
+                status_text += f"- **Last Updated**: {stats.get('last_updated', 'Unknown')}\n"
+            
+            status_text += f"\n**Last Check**: {health_status['timestamp']}"
+            
+            return status_text
+            
+        except Exception as e:
+            return f"❌ **Error checking system status**: {str(e)}"
+    
+    async def search_documents(
+        self,
+        search_query: str,
+        document_type: Optional[str] = None,
+        __user__: Optional[Dict] = None,
+        __event_emitter__=None
+    ) -> str:
+        """
+        Search for specific documents in the case.
+        
+        Args:
+            search_query: What to search for
+            document_type: Optional document type filter
+            __user__: User information
+            __event_emitter__: Event emitter
+            
+        Returns:
+            Search results
+        """
+        if self.valves.require_authentication and not __user__:
+            return "Authentication required to search documents."
+        
+        query_with_context = f"Find documents related to: {search_query}"
+        if document_type:
+            query_with_context += f" (document type: {document_type})"
+        
+        return await self.query_legal_documents(
+            query=query_with_context,
+            __user__=__user__,
+            __event_emitter__=__event_emitter
+        )

@@ -22,14 +22,6 @@ class BoxConfig:
     passphrase: str = os.getenv("BOX_PASSPHRASE", "")
 
 @dataclass
-class DatabaseConfig:
-    """Legacy database configuration - no longer used"""
-    # Kept for backward compatibility during transition
-    supabase_url: str = ""
-    supabase_key: str = ""
-    supabase_service_key: str = ""
-
-@dataclass
 class QdrantConfig:
     """Qdrant vector database configuration"""
     host: str = os.getenv("QDRANT_HOST", "qdrant")
@@ -113,7 +105,6 @@ class Settings:
     
     def __init__(self):
         self.box = BoxConfig()
-        self.database = DatabaseConfig()  # Deprecated - kept for compatibility
         self.qdrant = QdrantConfig()
         self.openai = OpenAIConfig()
         self.chunking = ChunkingConfig()
@@ -133,6 +124,20 @@ class Settings:
                 "citation": 0.1
             }
         }
+    
+    def __str__(self):
+        return (
+            f"Settings(\n"
+            f"  box={self.box},\n"
+            f"  qdrant={self.qdrant},\n"
+            f"  openai={self.openai},\n"
+            f"  chunking={self.chunking},\n"
+            f"  processing={self.processing},\n"
+            f"  vector={self.vector},\n"
+            f"  cost={self.cost},\n"
+            f"  legal={self.legal}\n"
+            f")"
+        )
     
     def validate(self) -> bool:
         """Validate all required settings are present"""

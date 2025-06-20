@@ -1,6 +1,5 @@
 """
 Document deduplication using Qdrant as the registry.
-Replaces Supabase-based deduplication with Qdrant collections.
 """
 
 import hashlib
