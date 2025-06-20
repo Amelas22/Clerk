@@ -1436,6 +1436,8 @@ Inserted data points with both dense and sparse vectors, as well as descriptions
 Performed a hybrid search combining keyword relevance and dense vector similarity using Reciprocal Rank Fusion.
 This approach allows for effective hybrid search, combining textual and semantic search capabilities, which can be highly useful in applications involving complex search requirements.
 
+
+
 Separate User Data in Multitenant Setups
 In this tutorial, we will cover how to implement multitenancy in Qdrant. Multitenancy allows you to host multiple tenants or clients within a single instance of Qdrant, ensuring data isolation and access control between tenants. This feature is essential for use cases where you need to serve different clients while maintaining separation of their data.
 

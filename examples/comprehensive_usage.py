@@ -15,7 +15,8 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.document_injector import DocumentInjector
-from src.vector_storage import EmbeddingGenerator, QdrantVectorStore
+from src.vector_storage.qdrant_store import QdrantVectorStore
+from src.ai_agents.legal_document_agent import LegalDocumentAgent
 from src.document_processing import DocumentDeduplicator
 
 
@@ -28,43 +29,34 @@ def demonstrate_document_processing():
     # Initialize injector with cost tracking enabled
     injector = DocumentInjector(enable_cost_tracking=True)
     
+    # Initialize components
+    vector_store = QdrantVectorStore()
+    legal_agent = LegalDocumentAgent(allowed_case_name="general")
+    
     # Process a sample folder (replace with your actual Box folder ID)
     folder_id = "325242457476"
+    folder_name = "Cerrito v Test"  # Folder name becomes collection name
     
     print(f"\nProcessing folder: {folder_id}")
-    print("(Processing first 5 documents for demonstration)")
+    print(f"Using collection: {folder_name}")
     
-    # Process documents
-    results = injector.process_case_folder(folder_id, max_documents=5)
+    # Simulate processing documents
+    for i in range(3):
+        doc = {
+            "content": f"Sample legal document {i}",
+            "metadata": {"source": "Box"},
+            "document_type": "pleading"
+        }
+        legal_agent.index_document(doc, folder_name)
+        print(f"Indexed document {i}")
     
-    # Display results
-    print("\nProcessing Results:")
-    for result in results:
-        status_emoji = "✅" if result.status == "success" else "❌"
-        print(f"{status_emoji} {result.file_name}: {result.status}")
-        if result.status == "success":
-            print(f"   - Chunks created: {result.chunks_created}")
-            print(f"   - Processing time: {result.processing_time:.2f}s")
-    
-    # Get and display cost report
-    cost_report = injector.get_cost_report()
-    
-    print("\nCost Summary:")
-    print(f"Total documents: {cost_report['summary']['total_documents']}")
-    print(f"Total API calls: {cost_report['summary']['total_api_calls']}")
-    print(f"Total tokens: {cost_report['tokens']['total_tokens']:,}")
-    print(f"Total cost: ${cost_report['costs']['total_cost']:.4f}")
-    
-    # Display per-document costs
-    print("\nPer-Document Costs:")
-    for doc in cost_report['top_5_expensive_documents']:
-        print(f"- {doc['document_name']}: ${doc['cost']['total']:.4f}")
-        print(f"  Tokens: {doc['tokens']['total']:,} (Embedding: {doc['tokens']['embedding_tokens']:,}, Context: {doc['tokens']['context_tokens']:,})")
-    
-    return injector, results
+    print("\nIndexing complete")
+
+    # Return the injector for cost tracking
+    return injector
 
 
-def demonstrate_hybrid_search(case_name: str):
+async def demonstrate_hybrid_search(case_name: str):
     """Demonstrate hybrid search capabilities"""
     print("\n" + "="*80)
     print("HYBRID SEARCH DEMONSTRATION")
@@ -72,7 +64,7 @@ def demonstrate_hybrid_search(case_name: str):
     
     # Initialize search components
     search_manager = QdrantVectorStore()
-    embedding_gen = EmbeddingGenerator()
+    legal_agent = LegalDocumentAgent(allowed_case_name="Cerrito v Test")
     
     # Example: Legal document search
     print("\n1. Legal Document Search")
@@ -82,13 +74,13 @@ def demonstrate_hybrid_search(case_name: str):
     print(f"Query: {query}")
     
     # Generate embedding
-    query_embedding, tokens = embedding_gen.generate_embedding(query)
+    query_embedding, tokens = legal_agent.generate_embedding(query)
     print(f"Embedding tokens used: {tokens}")
     
     # Perform hybrid search
-    results = search_manager.hybrid_search(
-        case_name=case_name,
-        query_text=query,
+    results = await search_manager.hybrid_search(
+        folder_name=case_name,
+        query=query,
         query_embedding=query_embedding,
         limit=5
     )
@@ -107,11 +99,11 @@ def demonstrate_hybrid_search(case_name: str):
     query = "What did we say about the toxicology?"
     print(f"Query: {query}")
     
-    query_embedding, tokens = embedding_gen.generate_embedding(query)
+    query_embedding, tokens = legal_agent.generate_embedding(query)
     
-    results = search_manager.hybrid_search(
-        case_name=case_name,
-        query_text=query,
+    results = await search_manager.hybrid_search(
+        folder_name=case_name,
+        query=query,
         query_embedding=query_embedding,
         limit=5
     )
@@ -129,11 +121,11 @@ def demonstrate_hybrid_search(case_name: str):
     query = "What was the point of the fee petition?"
     print(f"Query: {query}")
     
-    query_embedding, tokens = embedding_gen.generate_embedding(query)
+    query_embedding, tokens = legal_agent.generate_embedding(query)
     
-    results = search_manager.hybrid_search(
-        case_name=case_name,
-        query_text=query,
+    results = await search_manager.hybrid_search(
+        folder_name=case_name,
+        query=query,
         query_embedding=query_embedding,
         limit=5
     )
@@ -237,16 +229,16 @@ def generate_comprehensive_report(injector: DocumentInjector, output_dir: str = 
     print(f"Summary report saved to: {summary_path}")
 
 
-def main():
+async def main():
     """Main demonstration function"""
     print("\nCLERK DOCUMENT INJECTOR - COMPREHENSIVE DEMONSTRATION")
     print("="*80)
     
     # 1. Process documents with cost tracking
-    injector, results = demonstrate_document_processing()
+    injector = demonstrate_document_processing()
     
     # 2. Demonstrate hybrid search (use a case from the results)
-    demonstrate_hybrid_search("Cerrito v Test")
+    await demonstrate_hybrid_search("Smith_v_Jones")
     
     # # 3. Verify case isolation
     # verify_case_isolation()
@@ -277,4 +269,5 @@ if __name__ == "__main__":
         ]
     )
     
-    main()
+    import asyncio
+    asyncio.run(main())

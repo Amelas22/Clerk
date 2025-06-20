@@ -3,11 +3,15 @@ Utility modules for Clerk legal AI system.
 """
 
 from .cost_tracker import CostTracker, TokenUsage, DocumentCost
+from .logger import setup_logging, get_logger, QueryLogger
 
 __all__ = [
     "CostTracker",
     "TokenUsage", 
-    "DocumentCost"
+    "DocumentCost",
+    "setup_logging",
+    "get_logger",
+    "QueryLogger"
 ]
 
 # Optional Excel reporting (requires pandas)

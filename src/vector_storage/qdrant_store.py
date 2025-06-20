@@ -1,7 +1,6 @@
 """
 Qdrant vector storage module.
-Manages storing and retrieving vectors from Qdrant with strict case isolation.
-Implements hybrid search combining dense vectors, sparse vectors, and metadata filtering.
+Manages storing and retrieving vectors from Qdrant with folder-based isolation and hybrid search.
 """
 
 import logging
@@ -10,7 +9,7 @@ import uuid
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass
-
+import re
 from qdrant_client import QdrantClient, AsyncQdrantClient
 from qdrant_client.http import models
 from qdrant_client.models import (
@@ -20,10 +19,10 @@ from qdrant_client.models import (
     SparseVectorParams, SparseIndexParams, NamedVector, NamedSparseVector,
     QueryRequest, SparseVector
 )
-
 from config.settings import settings
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 @dataclass
 class SearchResult:
@@ -38,10 +37,10 @@ class SearchResult:
 
 
 class QdrantVectorStore:
-    """Manages vector storage in Qdrant with strict case isolation and hybrid search"""
+    """Manages vector storage in Qdrant with folder-based isolation and hybrid search"""
     
     def __init__(self):
-        """Initialize Qdrant client and ensure collections exist"""
+        """Initialize Qdrant client"""
         self.config = settings.qdrant
         
         # Initialize synchronous client
@@ -59,43 +58,33 @@ class QdrantVectorStore:
             prefer_grpc=self.config.prefer_grpc,
             timeout=self.config.timeout
         )
-        
-        # Collection names
-        self.collection_name = self.config.collection_name
-        self.hybrid_collection_name = self.config.hybrid_collection_name
-        
-        # Ensure collections exist
-        self._ensure_collections_exist()
     
-    def _ensure_collections_exist(self):
-        """Ensure both standard and hybrid collections exist with optimal configuration"""
-        try:
-            # Check if collections exist
-            collections = self.client.get_collections().collections
-            collection_names = [col.name for col in collections]
-            
-            # Create standard collection if needed
-            if self.collection_name not in collection_names:
-                self._create_standard_collection()
-                logger.info(f"Created standard collection: {self.collection_name}")
-            else:
-                logger.info(f"Standard collection exists: {self.collection_name}")
-            
-            # Create hybrid collection if needed and enabled
-            if settings.legal["enable_hybrid_search"]:
-                if self.hybrid_collection_name not in collection_names:
-                    self._create_hybrid_collection()
-                    logger.info(f"Created hybrid collection: {self.hybrid_collection_name}")
-                else:
-                    logger.info(f"Hybrid collection exists: {self.hybrid_collection_name}")
-                    
-        except Exception as e:
-            logger.error(f"Error ensuring collections exist: {str(e)}")
-            raise
+    def get_collection_name(self, folder_name: str) -> str:
+        """Generate safe collection name from folder name"""
+        # Sanitize folder name to valid Qdrant collection name
+        sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', folder_name)
+        return f"{sanitized}_hybrid" if settings.legal["enable_hybrid_search"] else sanitized
     
-    def _create_standard_collection(self):
-        """Create standard vector collection with optimized configuration"""
-        # Prepare quantization config if enabled
+    def ensure_collection_exists(self, folder_name: str):
+        """Ensure collection exists for a specific folder"""
+        collection_name = self.get_collection_name(folder_name)
+        
+        # Check if collection exists
+        if not self.client.collection_exists(collection_name):
+            self.create_collection(collection_name)
+            logger.info(f"Created collection for folder '{folder_name}': {collection_name}")
+        
+        return collection_name
+    
+    def create_collection(self, collection_name: str):
+        """Create a new collection with hybrid configuration"""
+        if settings.legal["enable_hybrid_search"]:
+            self._create_hybrid_collection(collection_name)
+        else:
+            self._create_standard_collection(collection_name)
+    
+    def _create_standard_collection(self, collection_name: str):
+        """Create standard vector collection"""
         quantization_config = None
         if hasattr(settings.vector, 'quantization') and settings.vector.quantization:
             quantization_config = ScalarQuantization(
@@ -107,7 +96,7 @@ class QdrantVectorStore:
             )
         
         self.client.create_collection(
-            collection_name=self.collection_name,
+            collection_name=collection_name,
             vectors_config=VectorParams(
                 size=settings.vector.embedding_dimensions,
                 distance=Distance.COSINE
@@ -121,35 +110,25 @@ class QdrantVectorStore:
             quantization_config=quantization_config,
             on_disk_payload=False
         )
-        
-        # Create payload indexes for efficient filtering
-        self._create_payload_indexes(self.collection_name)
+        self._create_payload_indexes(collection_name)
     
-    def _create_hybrid_collection(self):
-        """Create hybrid collection with multiple vector types and sparse vectors"""
+    def _create_hybrid_collection(self, collection_name: str):
+        """Create hybrid collection with multiple vector types"""
         self.client.create_collection(
-            collection_name=self.hybrid_collection_name,
+            collection_name=collection_name,
             vectors_config={
-                # Main semantic embeddings
                 "semantic": VectorParams(
                     size=settings.vector.embedding_dimensions,
                     distance=Distance.COSINE
                 ),
-                # Legal terminology vectors (future: legal BERT)
                 "legal_concepts": VectorParams(
-                    size=settings.vector.embedding_dimensions,  # Same size for now
+                    size=settings.vector.embedding_dimensions,
                     distance=Distance.COSINE
                 )
             },
             sparse_vectors_config={
-                # Keyword matching
-                "keywords": SparseVectorParams(
-                    index=SparseIndexParams(on_disk=False)
-                ),
-                # Legal citation matching
-                "citations": SparseVectorParams(
-                    index=SparseIndexParams(on_disk=False)
-                )
+                "keywords": SparseVectorParams(index=SparseIndexParams(on_disk=False)),
+                "citations": SparseVectorParams(index=SparseIndexParams(on_disk=False))
             },
             hnsw_config=HnswConfigDiff(
                 m=settings.vector.hnsw_m,
@@ -159,9 +138,7 @@ class QdrantVectorStore:
             ),
             on_disk_payload=False
         )
-        
-        # Create payload indexes
-        self._create_payload_indexes(self.hybrid_collection_name)
+        self._create_payload_indexes(collection_name)
     
     def _create_payload_indexes(self, collection_name: str):
         """Create payload indexes for efficient filtering"""
@@ -191,171 +168,165 @@ class QdrantVectorStore:
                 # Index might already exist
                 logger.debug(f"Index {field_name} might already exist: {str(e)}")
     
-    def store_document_chunks(self, case_name: str, document_id: str,
-                            chunks: List[Dict[str, Any]], 
-                            use_hybrid: bool = True) -> List[str]:
-        """Store multiple chunks for a document with strict case isolation
+    def index_document(self, folder_name: str, document):
+        """Index a document in folder-specific collection"""
+        collection_name = self.ensure_collection_exists(folder_name)
         
-        Args:
-            case_name: Name of the case (CRITICAL for isolation)
-            document_id: Unique identifier for the document
-            chunks: List of chunk dictionaries with content, embedding, and metadata
-            use_hybrid: Whether to store in hybrid collection as well
-            
-        Returns:
-            List of stored chunk IDs
-        """
-        if not chunks:
+        if not document:
             return []
         
-        logger.info(f"Storing {len(chunks)} chunks for document {document_id} in case {case_name}")
+        logger.info(f"Indexing document in folder '{folder_name}'")
         
         stored_ids = []
         points = []
         
         try:
-            for i, chunk in enumerate(chunks):
-                # Generate unique ID for chunk
-                chunk_id = str(uuid.uuid4())
-                stored_ids.append(chunk_id)
+            # Generate unique ID for document
+            document_id = str(uuid.uuid4())
+            stored_ids.append(document_id)
+            
+            # Get document metadata safely
+            document_metadata = document.get("metadata", {})
+            
+            # Build payload with folder-based isolation
+            payload = {
+                # Primary fields for filtering - DO NOT NEST THESE
+                "folder_name": folder_name,
+                "document_id": document_id,
                 
-                # Get chunk metadata safely
-                chunk_metadata = chunk.get("metadata", {})
+                # Content
+                "content": document["content"],
+                "search_text": document.get("search_text", document["content"]),
                 
-                # Build payload with STRICT case isolation
-                # CRITICAL: case_name must be at the top level for filtering
-                payload = {
-                    # Primary fields for filtering - DO NOT NEST THESE
-                    "case_name": case_name,
-                    "document_id": document_id,
-                    
-                    # Content
-                    "content": chunk["content"],
-                    "search_text": chunk.get("search_text", chunk["content"]),
-                    
-                    # Chunk metadata
-                    "chunk_index": i,
-                    "chunk_id": chunk_id,
-                    
-                    # System metadata
-                    "indexed_at": datetime.utcnow().isoformat(),
-                    "vector_version": "1.0"
-                }
+                # Document metadata
+                "document_type": document.get("document_type", ""),
                 
-                # Add document metadata fields individually to avoid overwriting critical fields
-                # Skip case_name if it exists in metadata to prevent overwriting
-                for key, value in chunk_metadata.items():
-                    if key not in ["case_name", "document_id", "chunk_id", "chunk_index"]:
-                        payload[key] = value
-                
-                # Create point for standard collection
+                # System metadata
+                "indexed_at": datetime.utcnow().isoformat(),
+                "vector_version": "1.0"
+            }
+            
+            # Add document metadata fields individually to avoid overwriting critical fields
+            # Skip folder_name if it exists in metadata to prevent overwriting
+            for key, value in document_metadata.items():
+                if key not in ["folder_name", "document_id"]:
+                    payload[key] = value
+            
+            # Create point for standard collection
+            if settings.legal["enable_hybrid_search"]:
+                # For hybrid collections, we need to specify multiple vectors
                 point = PointStruct(
-                    id=chunk_id,
-                    vector=chunk["embedding"],
+                    id=document_id,
+                    vector={
+                        "semantic": document["embedding"],
+                        "legal_concepts": document["embedding"]
+                    },
                     payload=payload
                 )
-                points.append(point)
+            else:
+                # For standard collections, use single vector
+                point = PointStruct(
+                    id=document_id,
+                    vector=document["embedding"],
+                    payload=payload
+                )
             
-            # Batch upload to standard collection
+            points.append(point)
+            
+            # Batch upload
             self.client.upsert(
-                collection_name=self.collection_name,
+                collection_name=collection_name,
                 points=points,
                 wait=True
             )
             
-            # Also store in hybrid collection if enabled
-            if use_hybrid and settings.legal["enable_hybrid_search"]:
-                self._store_hybrid_chunks(case_name, document_id, chunks, stored_ids)
-            
-            logger.info(f"Successfully stored {len(stored_ids)} chunks")
+            logger.info(f"Successfully indexed {len(stored_ids)} documents")
             return stored_ids
             
         except Exception as e:
-            logger.error(f"Error storing chunks: {str(e)}")
+            logger.error(f"Error indexing document: {str(e)}")
             raise
     
-    def _store_hybrid_chunks(self, case_name: str, document_id: str,
-                           chunks: List[Dict[str, Any]], chunk_ids: List[str]):
-        """Store chunks in hybrid collection with multiple vector types"""
+    def _store_hybrid_document(self, folder_name: str, document, document_ids: List[str]):
+        """Store document in hybrid collection with multiple vector types"""
         try:
             hybrid_points = []
             
-            for chunk, chunk_id in zip(chunks, chunk_ids):
-                # Extract sparse vectors if available
-                keywords_sparse = chunk.get("keywords_sparse", {})
-                citations_sparse = chunk.get("citations_sparse", {})
-                
-                # Get chunk metadata safely
-                chunk_metadata = chunk.get("metadata", {})
-                
-                # Build payload - same structure as standard collection
-                payload = {
-                    # Primary fields for filtering - DO NOT NEST THESE
-                    "case_name": case_name,
-                    "document_id": document_id,
-                    "content": chunk["content"],
-                    "search_text": chunk.get("search_text", chunk["content"]),
+            # Extract sparse vectors if available
+            keywords_sparse = document.get("keywords_sparse", {})
+            citations_sparse = document.get("citations_sparse", {})
+            
+            # Get document metadata safely
+            document_metadata = document.get("metadata", {})
+            
+            # Build payload - same structure as standard collection
+            payload = {
+                # Primary fields for filtering - DO NOT NEST THESE
+                "folder_name": folder_name,
+                "document_id": document_ids[0],
+                "content": document["content"],
+                "search_text": document.get("search_text", document["content"]),
+            }
+            
+            # Add metadata fields individually
+            for key, value in document_metadata.items():
+                if key not in ["folder_name", "document_id"]:
+                    payload[key] = value
+            
+            # Prepare sparse vectors with proper formatting
+            sparse_vectors = {}
+            
+            # Format keywords sparse vector if available
+            if keywords_sparse:
+                sparse_vectors["keywords"] = {
+                    "indices": [int(idx) for idx in keywords_sparse.keys()],
+                    "values": [float(val) for val in keywords_sparse.values()]
                 }
-                
-                # Add metadata fields individually
-                for key, value in chunk_metadata.items():
-                    if key not in ["case_name", "document_id"]:
-                        payload[key] = value
-                
-                # Prepare sparse vectors with proper formatting
-                sparse_vectors = {}
-                
-                # Format keywords sparse vector if available
-                if keywords_sparse:
-                    sparse_vectors["keywords"] = {
-                        "indices": [int(idx) for idx in keywords_sparse.keys()],
-                        "values": [float(val) for val in keywords_sparse.values()]
-                    }
-                else:
-                    # Provide empty sparse vector structure
-                    sparse_vectors["keywords"] = {"indices": [], "values": []}
-                
-                # Format citations sparse vector if available
-                if citations_sparse:
-                    sparse_vectors["citations"] = {
-                        "indices": [int(idx) for idx in citations_sparse.keys()],
-                        "values": [float(val) for val in citations_sparse.values()]
-                    }
-                else:
-                    # Provide empty sparse vector structure
-                    sparse_vectors["citations"] = {"indices": [], "values": []}
-                
-                # Create hybrid point with vectors in dictionary format
-                point = PointStruct(
-                    id=chunk_id,
-                    vector={
-                        "semantic": chunk["embedding"],
-                        "legal_concepts": chunk["embedding"],  # Same for now
-                        **sparse_vectors  # Add sparse vectors
-                    },
-                    payload=payload
-                )
-                
-                hybrid_points.append(point)
+            else:
+                # Provide empty sparse vector structure
+                sparse_vectors["keywords"] = {"indices": [], "values": []}
+            
+            # Format citations sparse vector if available
+            if citations_sparse:
+                sparse_vectors["citations"] = {
+                    "indices": [int(idx) for idx in citations_sparse.keys()],
+                    "values": [float(val) for val in citations_sparse.values()]
+                }
+            else:
+                # Provide empty sparse vector structure
+                sparse_vectors["citations"] = {"indices": [], "values": []}
+            
+            # Create hybrid point with vectors in dictionary format
+            point = PointStruct(
+                id=document_ids[0],
+                vector={
+                    "semantic": document["embedding"],
+                    "legal_concepts": document["embedding"],  # Same for now
+                    **sparse_vectors  # Add sparse vectors
+                },
+                payload=payload
+            )
+            
+            hybrid_points.append(point)
             
             # Batch upload to hybrid collection
             self.client.upsert(
-                collection_name=self.hybrid_collection_name,
+                collection_name=self.get_collection_name(folder_name),
                 points=hybrid_points,
                 wait=True
             )
             
         except Exception as e:
-            logger.error(f"Error storing hybrid chunks: {str(e)}")
+            logger.error(f"Error storing hybrid document: {str(e)}")
             # Don't raise - hybrid is optional enhancement
     
-    def search_case_documents(self, case_name: str, query_embedding: List[float],
-                            limit: int = 10, threshold: float = 0.7,
-                            filters: Optional[Dict[str, Any]] = None) -> List[SearchResult]:
-        """Search for similar chunks ONLY within a specific case
+    def search_documents(self, folder_name: str, query_embedding: List[float],
+                        limit: int = 10, threshold: float = 0.7,
+                        filters: Optional[Dict[str, Any]] = None) -> List[SearchResult]:
+        """Search for similar documents ONLY within a specific folder
         
         Args:
-            case_name: Name of the case to search within (CRITICAL)
+            folder_name: Name of the folder to search within (CRITICAL)
             query_embedding: Query vector
             limit: Maximum number of results
             threshold: Minimum similarity threshold
@@ -365,12 +336,12 @@ class QdrantVectorStore:
             List of search results with similarity scores
         """
         try:
-            # Build case isolation filter
-            case_filter = Filter(
+            # Build folder isolation filter
+            folder_filter = Filter(
                 must=[
                     FieldCondition(
-                        key="case_name",
-                        match=MatchValue(value=case_name)
+                        key="folder_name",
+                        match=MatchValue(value=folder_name)
                     )
                 ]
             )
@@ -378,7 +349,7 @@ class QdrantVectorStore:
             # Add additional filters if provided
             if filters:
                 for key, value in filters.items():
-                    case_filter.must.append(
+                    folder_filter.must.append(
                         FieldCondition(
                             key=key,
                             match=MatchValue(value=value)
@@ -386,13 +357,13 @@ class QdrantVectorStore:
                     )
             
             # Log filter for debugging
-            logger.debug(f"Searching with filter: case_name='{case_name}'")
+            logger.debug(f"Searching with filter: folder_name='{folder_name}'")
             
             # Perform search
             results = self.client.search(
-                collection_name=self.collection_name,
+                collection_name=self.get_collection_name(folder_name),
                 query_vector=query_embedding,
-                query_filter=case_filter,
+                query_filter=folder_filter,
                 limit=limit,
                 score_threshold=threshold,
                 with_payload=True,
@@ -402,71 +373,64 @@ class QdrantVectorStore:
             # Convert to SearchResult objects
             search_results = []
             for point in results:
-                # CRITICAL: Double-check case isolation
-                point_case_name = point.payload.get("case_name")
-                if point_case_name != case_name:
+                # CRITICAL: Double-check folder isolation
+                point_folder_name = point.payload.get("folder_name")
+                if point_folder_name != folder_name:
                     logger.error(
-                        f"CRITICAL: Case isolation breach detected! "
-                        f"Expected: {case_name}, Got: {point_case_name}"
+                        f"CRITICAL: Folder isolation breach detected! "
+                        f"Expected: {folder_name}, Got: {point_folder_name}"
                     )
                     continue
                 
                 search_results.append(SearchResult(
                     id=str(point.id),
                     content=point.payload.get("content", ""),
-                    case_name=point_case_name,
+                    case_name=point.payload.get("case_name", ""),
                     document_id=point.payload.get("document_id", ""),
                     score=point.score,
                     metadata=point.payload,
                     search_type="vector"
                 ))
             
-            logger.debug(f"Found {len(search_results)} results for case '{case_name}'")
+            logger.debug(f"Found {len(search_results)} results for folder '{folder_name}'")
             return search_results
             
         except Exception as e:
-            logger.error(f"Error searching case documents: {str(e)}")
+            logger.error(f"Error searching documents: {str(e)}")
             raise
     
-    def hybrid_search(self, query: str, case_name: str, limit: int = 5) -> List[SearchResult]:
-        """Perform hybrid search using both dense and sparse vectors"""
-        # Generate embeddings
-        dense_embedding = self.embedding_generator.generate_embeddings([query])[0]
-        sparse_embedding = self.embedding_generator.generate_sparse_embedding(query)
+    async def hybrid_search(
+        self, 
+        folder_name: str, 
+        query: str,
+        query_embedding: List[float],
+        limit: int = 5
+    ) -> List[SearchResult]:
+        """Perform hybrid search in folder-specific collection"""
+        collection_name = self.ensure_collection_exists(folder_name)
         
-        # Build the query
-        query_request = models.QueryRequest(
-            vector=models.NamedVector(
-                name="dense",
-                vector=dense_embedding,
+        # Perform search
+        search_results = await self.async_client.search(
+            collection_name=collection_name,
+            query_vector=models.NamedVector(
+                name="semantic",
+                vector=query_embedding
             ),
-            sparse_vector=models.SparseVector(
-                name="sparse",
-                vector=models.SparseVector(
-                    indices=sparse_embedding.indices,
-                    values=sparse_embedding.values,
-                )
-            ),
-            limit=limit,
-            with_payload=True,
-            with_vector=False,
-            filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="metadata.case_name",
-                        match=models.MatchValue(value=case_name)
-                    )
-                ]
-            )
+            limit=limit
         )
         
-        # Execute the query
-        results = self.client.search(
-            collection_name=self.hybrid_collection_name,
-            query_request=query_request
-        )
+        # Convert to SearchResult
+        results = []
+        for hit in search_results:
+            payload = hit.payload or {}
+            results.append(SearchResult(
+                id=hit.id,
+                score=hit.score,
+                content=payload.get("content", ""),
+                metadata=payload
+            ))
         
-        return self._process_results(results)
+        return results
     
     def _process_results(self, results):
         # Convert to SearchResult objects
@@ -518,23 +482,23 @@ class QdrantVectorStore:
         sorted_results = sorted(converted_results, key=lambda x: x.score, reverse=True)
         return sorted_results[:limit]
     
-    def delete_document_vectors(self, case_name: str, document_id: str) -> int:
+    def delete_document_vectors(self, folder_name: str, document_id: str) -> int:
         """Delete all vectors for a specific document
         
         Args:
-            case_name: Case name (for verification)
+            folder_name: Folder name (for verification)
             document_id: Document to delete
             
         Returns:
             Number of vectors deleted
         """
         try:
-            # Build filter for document within case
+            # Build filter for document within folder
             standard_filter = Filter(
                 must=[
                     FieldCondition(
-                        key="case_name",
-                        match=MatchValue(value=case_name)
+                        key="folder_name",
+                        match=MatchValue(value=folder_name)
                     ),
                     FieldCondition(
                         key="document_id",
@@ -545,13 +509,13 @@ class QdrantVectorStore:
             
             # Count before deletion
             count_before = self.client.count(
-                collection_name=self.collection_name,
+                collection_name=self.get_collection_name(folder_name),
                 count_filter=standard_filter
             ).count
             
             # Delete points
             self.client.delete(
-                collection_name=self.collection_name,
+                collection_name=self.get_collection_name(folder_name),
                 points_selector=standard_filter
             )
             
@@ -559,7 +523,7 @@ class QdrantVectorStore:
             if settings.legal["enable_hybrid_search"]:
                 try:
                     self.client.delete(
-                        collection_name=self.hybrid_collection_name,
+                        collection_name=self.get_collection_name(folder_name),
                         points_selector=standard_filter
                     )
                 except Exception as e:
@@ -572,37 +536,37 @@ class QdrantVectorStore:
             logger.error(f"Error deleting document vectors: {str(e)}")
             raise
     
-    def get_case_statistics(self, case_name: str) -> Dict[str, Any]:
-        """Get statistics for a specific case
+    def get_folder_statistics(self, folder_name: str) -> Dict[str, Any]:
+        """Get statistics for a specific folder
         
         Args:
-            case_name: Case to get statistics for
+            folder_name: Folder to get statistics for
             
         Returns:
-            Dictionary with case statistics
+            Dictionary with folder statistics
         """
         try:
-            case_filter = Filter(
+            folder_filter = Filter(
                 must=[
                     FieldCondition(
-                        key="case_name",
-                        match=MatchValue(value=case_name)
+                        key="folder_name",
+                        match=MatchValue(value=folder_name)
                     )
                 ]
             )
             
             # Get counts
             total_chunks = self.client.count(
-                collection_name=self.collection_name,
-                count_filter=case_filter
+                collection_name=self.get_collection_name(folder_name),
+                count_filter=folder_filter
             ).count
             
             # Get unique documents (this is approximate)
             # In production, you might want to maintain a separate index
             search_results = self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=case_filter,
-                limit=10000,  # Adjust based on expected case size
+                collection_name=self.get_collection_name(folder_name),
+                scroll_filter=folder_filter,
+                limit=10000,  # Adjust based on expected folder size
                 with_payload=["document_id"],
                 with_vectors=False
             )
@@ -612,29 +576,29 @@ class QdrantVectorStore:
                 unique_documents.add(point.payload.get("document_id"))
             
             return {
-                "case_name": case_name,
+                "folder_name": folder_name,
                 "total_chunks": total_chunks,
                 "unique_documents": len(unique_documents),
                 "document_ids": list(unique_documents)
             }
             
         except Exception as e:
-            logger.error(f"Error getting case statistics: {str(e)}")
+            logger.error(f"Error getting folder statistics: {str(e)}")
             return {
-                "case_name": case_name,
+                "folder_name": folder_name,
                 "total_chunks": 0,
                 "unique_documents": 0,
                 "error": str(e)
             }
     
-    def optimize_collection(self):
+    def optimize_collection(self, folder_name: str):
         """Optimize collection for better performance"""
         try:
             logger.info("Starting collection optimization...")
             
             # Update optimizer config for faster indexing
             self.client.update_collection(
-                collection_name=self.collection_name,
+                collection_name=self.get_collection_name(folder_name),
                 optimizer_config=OptimizersConfigDiff(
                     indexing_threshold=50000,
                     flush_interval_sec=5,
@@ -644,7 +608,7 @@ class QdrantVectorStore:
             
             # Trigger optimization
             self.client.update_collection(
-                collection_name=self.collection_name,
+                collection_name=self.get_collection_name(folder_name),
                 optimizers_config=OptimizersConfigDiff(
                     max_optimization_threads=8
                 )

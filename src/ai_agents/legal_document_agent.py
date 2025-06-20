@@ -5,18 +5,18 @@ Provides intelligent Q&A for legal documents with strict case isolation.
 
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 from datetime import datetime
 from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIModel
-from vector_storage.qdrant_store import QdrantVectorStore
-from vector_storage.embeddings import EmbeddingGenerator
-from utils.logger import get_logger
-from utils.validators import validate_case_access
-from config.settings import settings
+from src.vector_storage.qdrant_store import QdrantVectorStore
+from src.vector_storage.embeddings import EmbeddingGenerator
+from src.utils.logger import get_logger
+from src.utils.validators import validate_case_access
+from config import settings
 
 logger = get_logger(__name__)
 
@@ -200,6 +200,23 @@ class LegalDocumentAgent:
         self.vector_store = QdrantVectorStore()
         self.embedding_generator = EmbeddingGenerator()
         logger.info(f"Legal Document Agent initialized for case: {allowed_case_name}")
+    
+    def index_document(self, document: Dict[str, Any], folder_name: str):
+        """Index a document in the vector database with folder-based isolation"""
+        # Generate embeddings
+        embeddings = self.embedding_generator.generate_embedding(
+            [document["content"]]
+        )
+        document["embedding"] = embeddings[0]
+        
+        # Index in vector store
+        self.vector_store.index_document(folder_name, document)
+        
+        logger.info(f"Indexed document in folder '{folder_name}'")
+    
+    def generate_embedding(self, text: str) -> Tuple[List[float], int]:
+        """Generate embedding for a single text"""
+        return self.embedding_generator.generate_embedding(text)
     
     async def query_documents(
         self, 
