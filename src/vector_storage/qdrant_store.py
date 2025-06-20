@@ -546,7 +546,7 @@ class QdrantVectorStore:
             case_name: Case name (used as collection name after sanitization)
             document_id: Unique document identifier
             chunks: List of chunk dictionaries with embeddings and metadata
-            use_hybrid: Whether to also store in hybrid collection
+            use_hybrid: Whether to use hybrid search features
             
         Returns:
             List of chunk IDs that were stored
@@ -562,113 +562,105 @@ class QdrantVectorStore:
         stored_ids = []
         points = []
         
+        # Generate base ID using timestamp + hash for uniqueness
+        # This ensures unique IDs even if multiple documents are processed simultaneously
+        timestamp_part = int(datetime.utcnow().timestamp() * 1000)  # Millisecond precision
+        hash_part = abs(hash(document_id)) % 1000000  # 6 digits from doc hash
+        base_id = timestamp_part * 1000000 + hash_part
+        
         try:
             for i, chunk in enumerate(chunks):
-                # Generate unique chunk ID
-                chunk_id = f"{document_id}_{i}"
-                stored_ids.append(chunk_id)
+                # Generate unique integer ID for this chunk
+                chunk_id = base_id + i
+                stored_ids.append(str(chunk_id))
                 
                 # Get chunk metadata safely
                 chunk_metadata = chunk.get("metadata", {})
                 
-                # Build payload with case isolation
+                # Build comprehensive payload
                 payload = {
-                    # Primary fields for filtering - DO NOT NEST THESE
-                    "case_name": case_name,  # CRITICAL for case isolation
-                    "folder_name": case_name,  # For compatibility
+                    # Primary identifiers
+                    "case_name": case_name,
                     "document_id": document_id,
-                    "chunk_id": chunk_id,
                     "chunk_index": i,
+                    "chunk_reference": f"{document_id}_{i}",
                     
-                    # Content
+                    # Content fields
                     "content": chunk["content"],
                     "search_text": chunk.get("search_text", chunk["content"]),
                     
-                    # Document metadata - add fields individually
+                    # Document metadata
                     "document_name": chunk_metadata.get("document_name", ""),
                     "document_type": chunk_metadata.get("document_type", ""),
                     "document_path": chunk_metadata.get("document_path", ""),
                     "document_link": chunk_metadata.get("document_link", ""),
                     "subfolder": chunk_metadata.get("subfolder", "root"),
+                    "folder_path": chunk_metadata.get("folder_path", ""),
                     
-                    # Chunk-specific metadata
+                    # Processing metadata
                     "has_context": chunk_metadata.get("has_context", False),
                     "original_length": chunk_metadata.get("original_length", 0),
+                    "context_length": chunk_metadata.get("context_length", 0),
+                    
+                    # Legal entity flags
                     "has_citations": chunk_metadata.get("has_citations", False),
                     "citation_count": chunk_metadata.get("citation_count", 0),
                     "has_monetary": chunk_metadata.get("has_monetary", False),
                     "has_dates": chunk_metadata.get("has_dates", False),
                     
+                    # Document info
+                    "page_count": chunk_metadata.get("page_count", 0),
+                    "file_size": chunk_metadata.get("file_size", 0),
+                    "modified_at": chunk_metadata.get("modified_at", ""),
+                    
                     # System metadata
                     "indexed_at": datetime.utcnow().isoformat(),
-                    "vector_version": "1.0"
+                    "vector_version": "1.0",
+                    "total_chunks": chunk_metadata.get("total_chunks", len(chunks))
                 }
                 
-                # Add any additional metadata fields
-                for key, value in chunk_metadata.items():
-                    if key not in payload and key not in ["case_name", "folder_name", "document_id"]:
-                        payload[key] = value
-                
-                # Create point for storage
-                if settings.legal["enable_hybrid_search"] and "keywords_sparse" in chunk:
-                    # For hybrid collections with multiple vectors
+                # Create point based on collection type
+                if settings.legal.get("enable_hybrid_search", False):
+                    # For hybrid collections - prepare vectors dictionary
                     vectors = {
-                        "semantic": chunk["embedding"],
-                        "legal_concepts": chunk["embedding"]  # Same embedding for now
+                        "semantic": chunk["embedding"]
                     }
                     
-                    # Convert sparse vectors from string keys to integer indices
-                    if "keywords_sparse" in chunk and chunk["keywords_sparse"]:
-                        keywords_indices = []
-                        keywords_values = []
-                        
-                        # If sparse vector has integer keys, use them directly
-                        if all(isinstance(k, int) for k in chunk["keywords_sparse"].keys()):
-                            for idx, value in chunk["keywords_sparse"].items():
-                                keywords_indices.append(idx)
-                                keywords_values.append(float(value))
-                        else:
-                            # String keys - need to hash them to indices
-                            for token, value in chunk["keywords_sparse"].items():
-                                # Use hash to generate consistent index
-                                idx = abs(hash(token)) % 100000  # Limit to reasonable range
-                                keywords_indices.append(idx)
-                                keywords_values.append(float(value))
-                        
-                        if keywords_indices:
-                            vectors["keywords"] = SparseVector(
-                                indices=keywords_indices,
-                                values=keywords_values
-                            )
+                    # Only add legal_concepts if it's different from semantic
+                    # For now, they're the same, so we'll skip to save space
+                    # vectors["legal_concepts"] = chunk["embedding"]
                     
-                    if "citations_sparse" in chunk and chunk["citations_sparse"]:
-                        citations_indices = []
-                        citations_values = []
-                        
-                        # Same conversion for citations
-                        if all(isinstance(k, int) for k in chunk["citations_sparse"].keys()):
-                            for idx, value in chunk["citations_sparse"].items():
-                                citations_indices.append(idx)
-                                citations_values.append(float(value))
-                        else:
-                            for token, value in chunk["citations_sparse"].items():
-                                idx = abs(hash(token)) % 100000
-                                citations_indices.append(idx)
-                                citations_values.append(float(value))
-                        
-                        if citations_indices:
-                            vectors["citations"] = SparseVector(
-                                indices=citations_indices,
-                                values=citations_values
-                            )
+                    # Handle sparse vectors if present and valid
+                    if "keywords_sparse" in chunk and isinstance(chunk["keywords_sparse"], dict):
+                        sparse_indices, sparse_values = self._convert_sparse_to_lists(chunk["keywords_sparse"])
+                        if sparse_indices:  # Only add if we have valid data
+                            try:
+                                vectors["keywords"] = SparseVector(
+                                    indices=sparse_indices,
+                                    values=sparse_values
+                                )
+                            except Exception as e:
+                                logger.warning(f"Could not add keywords sparse vector: {e}")
                     
+                    if "citations_sparse" in chunk and isinstance(chunk["citations_sparse"], dict):
+                        sparse_indices, sparse_values = self._convert_sparse_to_lists(chunk["citations_sparse"])
+                        if sparse_indices:
+                            try:
+                                vectors["citations"] = SparseVector(
+                                    indices=sparse_indices,
+                                    values=sparse_values
+                                )
+                            except Exception as e:
+                                logger.warning(f"Could not add citations sparse vector: {e}")
+                    
+                    # Create point with multiple vectors
                     point = PointStruct(
                         id=chunk_id,
                         vector=vectors,
                         payload=payload
                     )
                 else:
-                    # Standard collection with single vector
+                    # Standard collection - single embedding vector
                     point = PointStruct(
                         id=chunk_id,
                         vector=chunk["embedding"],
@@ -678,13 +670,12 @@ class QdrantVectorStore:
                 points.append(point)
             
             # Batch upload all points
-            operation_info = self.client.upsert(
+            self.client.upsert(
                 collection_name=collection_name,
                 points=points,
                 wait=True
             )
             
-            # Log operation result
             logger.info(f"Successfully stored {len(stored_ids)} chunks in collection '{collection_name}'")
             
             return stored_ids
@@ -693,8 +684,48 @@ class QdrantVectorStore:
             logger.error(f"Error storing document chunks: {str(e)}")
             logger.error(f"Collection: {collection_name}, Document: {document_id}")
             if points:
-                logger.error(f"First point structure: {points[0]}")
+                logger.debug(f"Failed with {len(points)} points prepared")
             raise
+
+    def _convert_sparse_to_lists(self, sparse_dict: Dict[Any, float]) -> Tuple[List[int], List[float]]:
+        """Convert sparse vector dictionary to lists of indices and values
+        
+        Args:
+            sparse_dict: Dictionary with either int or string keys
+            
+        Returns:
+            Tuple of (indices, values) lists
+        """
+        indices = []
+        values = []
+        
+        try:
+            for key, value in sparse_dict.items():
+                if isinstance(key, int):
+                    # Already an integer index
+                    indices.append(key)
+                    values.append(float(value))
+                elif isinstance(key, str) and key.isdigit():
+                    # String that represents an integer
+                    indices.append(int(key))
+                    values.append(float(value))
+                else:
+                    # String key - hash to index
+                    # Use consistent hashing for reproducibility
+                    idx = abs(hash(str(key))) % 100000
+                    indices.append(idx)
+                    values.append(float(value))
+            
+            # Sort by indices for consistency
+            if indices:
+                sorted_pairs = sorted(zip(indices, values), key=lambda x: x[0])
+                indices, values = zip(*sorted_pairs)
+                return list(indices), list(values)
+            
+        except Exception as e:
+            logger.warning(f"Error converting sparse vector: {e}")
+        
+        return [], []
 
     def _convert_sparse_vector_for_storage(self, sparse_dict: Dict[str, float]) -> Dict[str, List]:
         """Convert string-keyed sparse vector to Qdrant format
