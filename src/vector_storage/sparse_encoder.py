@@ -143,15 +143,22 @@ class SparseVectorEncoder:
         
         return tokens
     
-    def build_keyword_sparse_vector(self, text: str) -> Dict[str, float]:
-        """Build sparse vector for keyword matching (Qdrant-compatible: string-keyed)"""
+    def build_keyword_sparse_vector(self, text: str) -> Dict[int, float]:
+        """Build sparse vector for keyword matching with integer indices
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Dictionary mapping integer indices to float values
+        """
         # Tokenize
         tokens = self.tokenize_legal_text(text)
         
         # Count token frequencies
         token_counts = Counter(tokens)
         
-        # Build sparse vector
+        # Build sparse vector with integer indices
         sparse_vector = {}
         
         for token, count in token_counts.items():
@@ -162,9 +169,12 @@ class SparseVectorEncoder:
                 else:
                     continue  # Skip if vocabulary is full
             
+            # Use integer index
+            idx = self.keyword_vocab[token]
+            
             # TF-IDF style weighting
             tf = 1 + np.log(count)
-            sparse_vector[token] = tf  # Use token (string) as key
+            sparse_vector[idx] = tf
         
         # Normalize
         if sparse_vector:
@@ -172,9 +182,16 @@ class SparseVectorEncoder:
             sparse_vector = {k: v/norm for k, v in sparse_vector.items()}
         
         return sparse_vector
-    
-    def build_citation_sparse_vector(self, text: str) -> Dict[str, float]:
-        """Build sparse vector for citation matching (Qdrant-compatible: string-keyed)"""
+
+    def build_citation_sparse_vector(self, text: str) -> Dict[int, float]:
+        """Build sparse vector for citation matching with integer indices
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Dictionary mapping integer indices to float values
+        """
         # Extract legal entities
         entities = self.extract_legal_entities(text)
         
@@ -185,7 +202,7 @@ class SparseVectorEncoder:
             entities["rules"]
         )
         
-        # Build sparse vector
+        # Build sparse vector with integer indices
         sparse_vector = {}
         
         for citation in all_citations:
@@ -199,16 +216,75 @@ class SparseVectorEncoder:
                 else:
                     continue
             
-            sparse_vector[normalized] = 1.0  # Use citation string as key
+            # Use integer index
+            idx = self.citation_vocab[normalized]
+            sparse_vector[idx] = 1.0
         
         return sparse_vector
-    
-    def encode_for_hybrid_search(self, text: str) -> Tuple[Dict[str, float], Dict[str, float]]:
-        """Encode text for both keyword and citation sparse vectors (Qdrant-compatible)"""
+
+    def encode_for_hybrid_search(self, text: str) -> Tuple[Dict[int, float], Dict[int, float]]:
+        """Encode text for both keyword and citation sparse vectors with integer indices
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Tuple of (keyword_sparse, citation_sparse) dictionaries with integer indices
+        """
         keyword_sparse = self.build_keyword_sparse_vector(text)
         citation_sparse = self.build_citation_sparse_vector(text)
         
         return keyword_sparse, citation_sparse
+
+    def save_vocabulary(self, filepath: str = "vocab.json"):
+        """Save vocabulary mappings to file for consistency across runs
+        
+        Args:
+            filepath: Path to save vocabulary
+        """
+        import json
+        
+        vocab_data = {
+            "keyword_vocab": self.keyword_vocab,
+            "citation_vocab": self.citation_vocab,
+            "vocab_size": self.vocab_size
+        }
+        
+        with open(filepath, 'w') as f:
+            json.dump(vocab_data, f, indent=2)
+        
+        logger.info(f"Saved vocabulary to {filepath}")
+
+    def load_vocabulary(self, filepath: str = "vocab.json"):
+        """Load vocabulary mappings from file
+        
+        Args:
+            filepath: Path to vocabulary file
+        """
+        import json
+        import os
+        
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                vocab_data = json.load(f)
+            
+            self.keyword_vocab = vocab_data.get("keyword_vocab", {})
+            self.citation_vocab = vocab_data.get("citation_vocab", {})
+            
+            # Convert string keys to integers if needed
+            if self.keyword_vocab and isinstance(list(self.keyword_vocab.values())[0], str):
+                # Old format with string indices, need to rebuild
+                self.keyword_vocab = {k: i for i, k in enumerate(self.keyword_vocab.keys())}
+            
+            if self.citation_vocab and isinstance(list(self.citation_vocab.values())[0], str):
+                # Old format with string indices, need to rebuild
+                self.citation_vocab = {k: i for i, k in enumerate(self.citation_vocab.keys())}
+            
+            logger.info(f"Loaded vocabulary from {filepath}")
+            logger.info(f"Keyword vocab size: {len(self.keyword_vocab)}")
+            logger.info(f"Citation vocab size: {len(self.citation_vocab)}")
+        else:
+            logger.info("No existing vocabulary found, starting fresh")
     
     def prepare_search_text(self, text: str) -> str:
         """Prepare text for full-text search with legal-specific preprocessing

@@ -165,7 +165,8 @@ class DocumentInjector:
                 metadata={
                     "file_size": box_doc.size,
                     "modified_at": box_doc.modified_at.isoformat(),
-                    "folder_path": box_doc.folder_path
+                    "folder_path": box_doc.folder_path,
+                    "subfolder_name": box_doc.subfolder_name  # Track subfolder
                 }
             )
             
@@ -175,20 +176,28 @@ class DocumentInjector:
             if not self.pdf_extractor.validate_extraction(extracted):
                 raise ValueError("Text extraction failed or produced invalid results")
             
-            # Step 5: Chunk document
+            # Step 5: Get document link
+            doc_link = self.box_client.get_shared_link(box_doc.file_id)
+            
+            # Step 6: Chunk document
             doc_metadata = {
                 "case_name": box_doc.case_name,  # CRITICAL for case isolation
                 "document_name": box_doc.name,
                 "document_path": box_doc.path,
                 "document_hash": doc_hash,
+                "document_link": doc_link,  # Add Box link
                 "page_count": extracted.page_count,
-                "document_type": self._determine_document_type(box_doc.name, extracted.text)
+                "document_type": self._determine_document_type(box_doc.name, extracted.text),
+                "folder_path": "/".join(box_doc.folder_path),
+                "subfolder": box_doc.subfolder_name or "root",  # Track subfolder
+                "file_size": box_doc.size,
+                "modified_at": box_doc.modified_at.isoformat()
             }
             
             chunks = self.chunker.chunk_document(extracted.text, doc_metadata)
-            logger.info(f"Created {len(chunks)} chunks")
+            logger.info(f"Created {len(chunks)} chunks from {box_doc.subfolder_name or 'root'}/{box_doc.name}")
             
-            # Step 6: Generate contexts for chunks
+            # Step 7: Generate contexts for chunks
             chunk_texts = [chunk.content for chunk in chunks]
             chunks_with_context, context_usage = self.context_generator.generate_contexts_sync(
                 chunk_texts, extracted.text
@@ -203,7 +212,7 @@ class DocumentInjector:
                     model=self.context_generator.model
                 )
             
-            # Step 7: Generate embeddings and prepare for storage
+            # Step 8: Generate embeddings and prepare for storage
             storage_chunks = []
             
             for chunk, context_chunk in zip(chunks, chunks_with_context):
@@ -249,29 +258,30 @@ class DocumentInjector:
                         "has_citations": bool(entities["citations"]),
                         "citation_count": len(entities["citations"]),
                         "has_monetary": bool(entities["monetary"]),
-                        "has_dates": bool(entities["dates"])
+                        "has_dates": bool(entities["dates"]),
+                        "subfolder": box_doc.subfolder_name or "root"  # Ensure subfolder is tracked
                     }
                 }
                 storage_chunks.append(chunk_data)
             
-            # Step 8: Store in Qdrant vector database
+            # Step 9: Store in Qdrant vector database (using case name for collection)
             chunk_ids = self.vector_store.store_document_chunks(
-                case_name=box_doc.case_name,
+                case_name=box_doc.case_name,  # Use case name, not folder name
                 document_id=doc_hash,
                 chunks=storage_chunks,
                 use_hybrid=True  # Enable hybrid collection storage
             )
             
-            logger.info(f"Successfully stored {len(chunk_ids)} chunks for {box_doc.name}")
+            logger.info(f"Successfully stored {len(chunk_ids)} chunks for {box_doc.name} in case '{box_doc.case_name}'")
             
             # Complete cost tracking
             if self.enable_cost_tracking:
                 self.cost_tracker.finish_document(
-                doc_hash if 'chunk_ids' in locals() else box_doc.file_id,
-                len(chunk_ids) if 'chunk_ids' in locals() else 0,
-                (datetime.utcnow() - start_time).total_seconds()
-            )
-                        
+                    doc_hash,
+                    len(chunk_ids),
+                    (datetime.utcnow() - start_time).total_seconds()
+                )
+            
             return ProcessingResult(
                 document_id=doc_hash,
                 file_name=box_doc.name,
@@ -285,12 +295,12 @@ class DocumentInjector:
             logger.error(f"Error processing {box_doc.name}: {str(e)}")
             
             # Track failed document
-            if self.enable_cost_tracking:
+            if self.enable_cost_tracking and 'doc_hash' in locals():
                 self.cost_tracker.finish_document(
-                doc_hash if 'chunk_ids' in locals() else box_doc.file_id,
-                len(chunk_ids) if 'chunk_ids' in locals() else 0,
-                (datetime.utcnow() - start_time).total_seconds()
-            )
+                    doc_hash,
+                    0,
+                    (datetime.utcnow() - start_time).total_seconds()
+                )
             
             return ProcessingResult(
                 document_id=box_doc.file_id,

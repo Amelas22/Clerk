@@ -10,6 +10,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass
 import re
+import hashlib
+
 from qdrant_client import QdrantClient, AsyncQdrantClient
 from qdrant_client.http import models
 from qdrant_client.models import (
@@ -17,7 +19,7 @@ from qdrant_client.models import (
     PointStruct, Filter, FieldCondition, MatchValue,
     ScalarQuantization, ScalarQuantizationConfig, ScalarType,
     SparseVectorParams, SparseIndexParams, NamedVector, NamedSparseVector,
-    QueryRequest, SparseVector
+    QueryRequest, SparseVector, models
 )
 from config.settings import settings
 from src.utils.logger import get_logger
@@ -535,7 +537,335 @@ class QdrantVectorStore:
         except Exception as e:
             logger.error(f"Error deleting document vectors: {str(e)}")
             raise
-    
+
+    def store_document_chunks(self, case_name: str, document_id: str, 
+                            chunks: List[Dict[str, Any]], use_hybrid: bool = False) -> List[str]:
+        """Store multiple chunks for a document in the case-specific collection
+        
+        Args:
+            case_name: Case name (used as collection name after sanitization)
+            document_id: Unique document identifier
+            chunks: List of chunk dictionaries with embeddings and metadata
+            use_hybrid: Whether to also store in hybrid collection
+            
+        Returns:
+            List of chunk IDs that were stored
+        """
+        if not chunks:
+            return []
+        
+        # Ensure collection exists for this case
+        collection_name = self.ensure_collection_exists(case_name)
+        
+        logger.info(f"Storing {len(chunks)} chunks for document {document_id} in collection '{collection_name}'")
+        
+        stored_ids = []
+        points = []
+        
+        try:
+            for i, chunk in enumerate(chunks):
+                # Generate unique chunk ID
+                chunk_id = f"{document_id}_{i}"
+                stored_ids.append(chunk_id)
+                
+                # Get chunk metadata safely
+                chunk_metadata = chunk.get("metadata", {})
+                
+                # Build payload with case isolation
+                payload = {
+                    # Primary fields for filtering - DO NOT NEST THESE
+                    "case_name": case_name,  # CRITICAL for case isolation
+                    "folder_name": case_name,  # For compatibility
+                    "document_id": document_id,
+                    "chunk_id": chunk_id,
+                    "chunk_index": i,
+                    
+                    # Content
+                    "content": chunk["content"],
+                    "search_text": chunk.get("search_text", chunk["content"]),
+                    
+                    # Document metadata - add fields individually
+                    "document_name": chunk_metadata.get("document_name", ""),
+                    "document_type": chunk_metadata.get("document_type", ""),
+                    "document_path": chunk_metadata.get("document_path", ""),
+                    "document_link": chunk_metadata.get("document_link", ""),
+                    "subfolder": chunk_metadata.get("subfolder", "root"),
+                    
+                    # Chunk-specific metadata
+                    "has_context": chunk_metadata.get("has_context", False),
+                    "original_length": chunk_metadata.get("original_length", 0),
+                    "has_citations": chunk_metadata.get("has_citations", False),
+                    "citation_count": chunk_metadata.get("citation_count", 0),
+                    "has_monetary": chunk_metadata.get("has_monetary", False),
+                    "has_dates": chunk_metadata.get("has_dates", False),
+                    
+                    # System metadata
+                    "indexed_at": datetime.utcnow().isoformat(),
+                    "vector_version": "1.0"
+                }
+                
+                # Add any additional metadata fields
+                for key, value in chunk_metadata.items():
+                    if key not in payload and key not in ["case_name", "folder_name", "document_id"]:
+                        payload[key] = value
+                
+                # Create point for storage
+                if settings.legal["enable_hybrid_search"] and "keywords_sparse" in chunk:
+                    # For hybrid collections with multiple vectors
+                    vectors = {
+                        "semantic": chunk["embedding"],
+                        "legal_concepts": chunk["embedding"]  # Same embedding for now
+                    }
+                    
+                    # Convert sparse vectors from string keys to integer indices
+                    if "keywords_sparse" in chunk and chunk["keywords_sparse"]:
+                        keywords_indices = []
+                        keywords_values = []
+                        
+                        # If sparse vector has integer keys, use them directly
+                        if all(isinstance(k, int) for k in chunk["keywords_sparse"].keys()):
+                            for idx, value in chunk["keywords_sparse"].items():
+                                keywords_indices.append(idx)
+                                keywords_values.append(float(value))
+                        else:
+                            # String keys - need to hash them to indices
+                            for token, value in chunk["keywords_sparse"].items():
+                                # Use hash to generate consistent index
+                                idx = abs(hash(token)) % 100000  # Limit to reasonable range
+                                keywords_indices.append(idx)
+                                keywords_values.append(float(value))
+                        
+                        if keywords_indices:
+                            vectors["keywords"] = SparseVector(
+                                indices=keywords_indices,
+                                values=keywords_values
+                            )
+                    
+                    if "citations_sparse" in chunk and chunk["citations_sparse"]:
+                        citations_indices = []
+                        citations_values = []
+                        
+                        # Same conversion for citations
+                        if all(isinstance(k, int) for k in chunk["citations_sparse"].keys()):
+                            for idx, value in chunk["citations_sparse"].items():
+                                citations_indices.append(idx)
+                                citations_values.append(float(value))
+                        else:
+                            for token, value in chunk["citations_sparse"].items():
+                                idx = abs(hash(token)) % 100000
+                                citations_indices.append(idx)
+                                citations_values.append(float(value))
+                        
+                        if citations_indices:
+                            vectors["citations"] = SparseVector(
+                                indices=citations_indices,
+                                values=citations_values
+                            )
+                    
+                    point = PointStruct(
+                        id=chunk_id,
+                        vector=vectors,
+                        payload=payload
+                    )
+                else:
+                    # Standard collection with single vector
+                    point = PointStruct(
+                        id=chunk_id,
+                        vector=chunk["embedding"],
+                        payload=payload
+                    )
+                
+                points.append(point)
+            
+            # Batch upload all points
+            operation_info = self.client.upsert(
+                collection_name=collection_name,
+                points=points,
+                wait=True
+            )
+            
+            # Log operation result
+            logger.info(f"Successfully stored {len(stored_ids)} chunks in collection '{collection_name}'")
+            
+            return stored_ids
+            
+        except Exception as e:
+            logger.error(f"Error storing document chunks: {str(e)}")
+            logger.error(f"Collection: {collection_name}, Document: {document_id}")
+            if points:
+                logger.error(f"First point structure: {points[0]}")
+            raise
+
+    def _convert_sparse_vector_for_storage(self, sparse_dict: Dict[str, float]) -> Dict[str, List]:
+        """Convert string-keyed sparse vector to Qdrant format
+        
+        The sparse encoder returns vectors with string keys (tokens),
+        but Qdrant needs integer indices.
+        
+        Args:
+            sparse_dict: Dictionary with string keys and float values
+            
+        Returns:
+            Dictionary with 'indices' and 'values' lists
+        """
+        # For now, we'll use a simple hash-based approach
+        # In production, you'd want a consistent vocabulary mapping
+        indices = []
+        values = []
+        
+        for token, value in sparse_dict.items():
+            # Simple hash to get an index (mod by large prime for distribution)
+            index = abs(hash(token)) % 1000000
+            indices.append(index)
+            values.append(float(value))
+        
+        return {
+            "indices": indices,
+            "values": values
+        }
+        
+    def sanitize_collection_name(self, case_name: str) -> str:
+        """Sanitize and truncate collection name for Qdrant
+        
+        Args:
+            case_name: Original case/folder name
+            
+        Returns:
+            Sanitized collection name (max 63 chars, alphanumeric + underscore)
+        """
+        # Remove special characters, keep only alphanumeric and spaces
+        sanitized = re.sub(r'[^a-zA-Z0-9\s]', '', case_name)
+        
+        # Replace spaces with underscores
+        sanitized = re.sub(r'\s+', '_', sanitized.strip())
+        
+        # Remove multiple underscores
+        sanitized = re.sub(r'_+', '_', sanitized)
+        
+        # Convert to lowercase for consistency
+        sanitized = sanitized.lower()
+        
+        # Handle empty result
+        if not sanitized:
+            sanitized = "unnamed_case"
+        
+        # If name is too long, truncate and add hash
+        max_length = 63  # Safe limit for most filesystems
+        
+        if len(sanitized) > max_length:
+            # Keep first part of name and add hash suffix
+            hash_suffix = hashlib.md5(case_name.encode()).hexdigest()[:8]
+            
+            # Calculate how much of the name we can keep
+            # Format: name_hash (1 underscore + 8 chars for hash)
+            available_length = max_length - 9
+            
+            sanitized = f"{sanitized[:available_length]}_{hash_suffix}"
+        
+        # Ensure it doesn't start with a number (some systems don't like this)
+        if sanitized[0].isdigit():
+            sanitized = f"case_{sanitized}"
+        
+        # Final length check
+        if len(sanitized) > max_length:
+            sanitized = sanitized[:max_length]
+        
+        logger.debug(f"Collection name: '{case_name}' -> '{sanitized}'")
+        
+        return sanitized
+
+    def get_collection_name(self, folder_name: str) -> str:
+        """Generate safe collection name from folder name
+        
+        This method overrides the existing one to add proper sanitization.
+        """
+        # First sanitize the name
+        sanitized = self.sanitize_collection_name(folder_name)
+        
+        # Add suffix based on search type
+        if settings.legal["enable_hybrid_search"]:
+            collection_name = f"{sanitized}_hybrid"
+        else:
+            collection_name = sanitized
+        
+        # Final check that we're still within limits
+        if len(collection_name) > 63:
+            # Truncate if adding suffix made it too long
+            if settings.legal["enable_hybrid_search"]:
+                collection_name = f"{sanitized[:56]}_hybrid"
+            else:
+                collection_name = sanitized[:63]
+        
+        return collection_name
+
+    def get_case_name_mapping(self) -> Dict[str, str]:
+        """Get mapping of sanitized collection names to original case names
+        
+        Returns:
+            Dictionary mapping collection names to original case names
+        """
+        try:
+            # Get all collections
+            collections = self.client.get_collections().collections
+            
+            mapping = {}
+            for collection in collections:
+                # Try to get original case name from collection metadata
+                try:
+                    # First, check if we stored the original name in the collection
+                    # This would require updating the create_collection method
+                    info = self.client.get_collection(collection.name)
+                    
+                    # For now, just store the collection name
+                    mapping[collection.name] = collection.name
+                    
+                except Exception as e:
+                    logger.debug(f"Could not get info for collection {collection.name}: {e}")
+                    mapping[collection.name] = collection.name
+            
+            return mapping
+            
+        except Exception as e:
+            logger.error(f"Error getting case name mapping: {str(e)}")
+            return {}
+
+    def list_cases(self) -> List[Dict[str, Any]]:
+        """List all cases (collections) in the system
+        
+        Returns:
+            List of case information dictionaries
+        """
+        try:
+            collections = self.client.get_collections().collections
+            cases = []
+            
+            for collection in collections:
+                try:
+                    # Get collection info
+                    info = self.client.get_collection(collection.name)
+                    
+                    cases.append({
+                        "collection_name": collection.name,
+                        "original_name": collection.name,  # Would be from metadata
+                        "vector_count": info.vectors_count,
+                        "points_count": info.points_count,
+                        "indexed_vectors_count": getattr(info, 'indexed_vectors_count', 0),
+                        "status": info.status
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Could not get details for {collection.name}: {e}")
+                    cases.append({
+                        "collection_name": collection.name,
+                        "error": str(e)
+                    })
+            
+            return cases
+            
+        except Exception as e:
+            logger.error(f"Error listing cases: {str(e)}")
+            return []
+            
     def get_folder_statistics(self, folder_name: str) -> Dict[str, Any]:
         """Get statistics for a specific folder
         

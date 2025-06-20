@@ -28,6 +28,7 @@ class BoxDocument:
     modified_at: datetime
     parent_folder_id: str
     folder_path: List[str]
+    subfolder_name: Optional[str] = None  # Track immediate parent subfolder
 
 class BoxClient:
     """Manages Box API connections and file operations"""
@@ -52,44 +53,80 @@ class BoxClient:
             logger.error(f"Failed to create Box client: {str(e)}")
             raise
     
-    def get_folder_path(self, folder: Folder) -> Tuple[str, List[str]]:
-        """Get the full path of a folder
+    def get_case_folder_info(self, folder_id: str) -> Tuple[str, str]:
+        """Get case name and folder name for a given folder
         
+        Args:
+            folder_id: Box folder ID
+            
         Returns:
-            Tuple of (case_name, folder_path_list)
+            Tuple of (case_name, folder_name)
         """
-        path_parts = []
-        current = folder
-        case_name = folder.name  # Default to current folder name
-        
-        while current.id != "0":  # "0" is the root folder
-            path_parts.insert(0, current.name)
-            try:
-                parent = current.get_parent()
-                if parent and parent.id != "0":
-                    current = parent
-                    case_name = parent.name  # Keep updating to get top-level
-                else:
-                    break
-            except:
-                break
-                
-        return case_name, path_parts
+        try:
+            folder = self.client.folder(folder_id=folder_id).get()
+            return folder.name, folder.name
+        except Exception as e:
+            logger.error(f"Error getting folder info: {str(e)}")
+            raise
     
-    def traverse_folder(self, parent_folder_id: str) -> Generator[BoxDocument, None, None]:
+    def get_subfolders(self, parent_folder_id: str) -> List[Dict[str, str]]:
+        """Get all subfolders in a parent folder
+        
+        Args:
+            parent_folder_id: Parent folder ID
+            
+        Returns:
+            List of folder info dictionaries
+        """
+        try:
+            folder = self.client.folder(folder_id=parent_folder_id).get()
+            subfolders = []
+            
+            for item in folder.get_items():
+                if item.type == "folder":
+                    subfolders.append({
+                        "id": item.id,
+                        "name": item.name,
+                        "type": item.type
+                    })
+            
+            return subfolders
+            
+        except Exception as e:
+            logger.error(f"Error getting subfolders: {str(e)}")
+            raise
+    
+    def traverse_folder(self, parent_folder_id: str, 
+                       case_name: Optional[str] = None,
+                       parent_path: Optional[List[str]] = None) -> Generator[BoxDocument, None, None]:
         """Recursively traverse folder and yield all PDF documents
         
         Args:
             parent_folder_id: Box folder ID to start traversal
+            case_name: Override case name (for maintaining parent case context)
+            parent_path: Path components from root to maintain hierarchy
             
         Yields:
             BoxDocument objects for each PDF found
         """
         try:
             folder = self.client.folder(folder_id=parent_folder_id).get()
-            case_name, folder_path = self.get_folder_path(folder)
             
-            logger.info(f"Traversing folder: {'/'.join(folder_path)} (Case: {case_name})")
+            # If no case name provided, this is the root case folder
+            if case_name is None:
+                case_name = folder.name
+                parent_path = []
+                logger.info(f"Processing case: {case_name}")
+            
+            # Build current path
+            current_path = parent_path + [folder.name] if parent_path else [folder.name]
+            
+            # Determine subfolder name (immediate parent, not case root)
+            subfolder_name = None
+            if len(current_path) > 1:
+                # This is a subfolder of the case
+                subfolder_name = folder.name
+                logger.info(f"Processing subfolder: {'/'.join(current_path)}")
             
             # Get all items in folder
             items = folder.get_items()
@@ -100,25 +137,30 @@ class BoxClient:
                     if item.name.lower().endswith('.pdf'):
                         file_info = self.client.file(file_id=item.id).get()
                         
-                        # Create BoxDocument
+                        # Create BoxDocument with consistent case name
                         doc = BoxDocument(
                             file_id=item.id,
                             name=item.name,
-                            path=f"{'/'.join(folder_path)}/{item.name}",
-                            case_name=case_name,
+                            path=f"{'/'.join(current_path)}/{item.name}",
+                            case_name=case_name,  # Always use the root case name
                             size=file_info.size,
                             modified_at=datetime.fromisoformat(
                                 file_info.modified_at.replace('Z', '+00:00')
                             ),
                             parent_folder_id=parent_folder_id,
-                            folder_path=folder_path
+                            folder_path=current_path,
+                            subfolder_name=subfolder_name  # Track immediate parent
                         )
                         
                         yield doc
                         
                 elif item.type == "folder":
-                    # Recursively process subfolders
-                    yield from self.traverse_folder(item.id)
+                    # Recursively process subfolders with same case name
+                    yield from self.traverse_folder(
+                        item.id, 
+                        case_name=case_name,  # Pass down the case name
+                        parent_path=current_path
+                    )
                     
         except Exception as e:
             logger.error(f"Error traversing folder {parent_folder_id}: {str(e)}")
@@ -172,6 +214,30 @@ class BoxClient:
         except Exception as e:
             logger.error(f"Error getting file info for {file_id}: {str(e)}")
             raise
+    
+    def get_shared_link(self, file_id: str) -> Optional[str]:
+        """Get or create a shared link for a file
+        
+        Args:
+            file_id: Box file ID
+            
+        Returns:
+            Shared link URL or None
+        """
+        try:
+            file = self.client.file(file_id=file_id).get()
+            
+            # Check if shared link exists
+            if file.shared_link:
+                return file.shared_link['url']
+            
+            # Create new shared link
+            shared_link = file.create_shared_link(access='open')
+            return shared_link['url']
+            
+        except Exception as e:
+            logger.error(f"Error getting shared link for {file_id}: {str(e)}")
+            return None
     
     def check_connection(self) -> bool:
         """Test Box API connection
