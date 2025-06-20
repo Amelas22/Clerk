@@ -11,8 +11,11 @@ dev-debug.log
 # Dependency directories
 node_modules/
 
+/scripts/ 
+/examples/
 /venv/
 /reports/
+/examples/comprehensive_usage.py
 
 # Environment variables
 .env
