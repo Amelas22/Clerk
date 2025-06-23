@@ -87,10 +87,10 @@ class DocumentInjector:
         logger.info(f"Starting to process case folder: {parent_folder_id}")
         
         # Get all PDFs from folder
-        documents = self.box_client.traverse_folder(parent_folder_id)
+        documents = list(self.box_client.traverse_folder(parent_folder_id))
         
         if max_documents:
-            documents = list(documents)[:max_documents]
+            documents = documents[:max_documents]
             logger.info(f"Limited to processing {max_documents} documents")
         
         logger.info(f"Found {len(documents)} documents to process")

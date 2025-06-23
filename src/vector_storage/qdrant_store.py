@@ -65,18 +65,42 @@ class QdrantVectorStore:
         """Generate safe collection name from folder name"""
         # Sanitize folder name to valid Qdrant collection name
         sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', folder_name)
-        return f"{sanitized}_hybrid" if settings.legal["enable_hybrid_search"] else sanitized
+        return f"{sanitized}" if settings.legal["enable_hybrid_search"] else sanitized
     
     def ensure_collection_exists(self, folder_name: str):
         """Ensure collection exists for a specific folder"""
         collection_name = self.get_collection_name(folder_name)
         
-        # Check if collection exists
-        if not self.client.collection_exists(collection_name):
-            self.create_collection(collection_name)
-            logger.info(f"Created collection for folder '{folder_name}': {collection_name}")
-        
-        return collection_name
+        try:
+            # Check if collection exists
+            exists = self.client.collection_exists(collection_name)
+            logger.debug(f"Collection '{collection_name}' exists: {exists}")
+            
+            if not exists:
+                logger.info(f"Creating new collection: {collection_name}")
+                self.create_collection(collection_name)
+                
+                # Verify creation
+                if self.client.collection_exists(collection_name):
+                    logger.info(f"Successfully created collection: {collection_name}")
+                else:
+                    raise Exception(f"Collection creation failed - collection still doesn't exist: {collection_name}")
+            
+            return collection_name
+            
+        except Exception as e:
+            logger.error(f"Error ensuring collection exists: {str(e)}")
+            logger.error(f"Folder: {folder_name}, Collection: {collection_name}")
+            logger.error(f"Qdrant URL: {self.config.url}")
+            
+            # Try to create collection with minimal config as fallback
+            try:
+                logger.warning("Attempting to create collection with minimal configuration...")
+                self._create_minimal_collection(collection_name)
+                return collection_name
+            except Exception as fallback_error:
+                logger.error(f"Fallback collection creation also failed: {str(fallback_error)}")
+                raise Exception(f"Failed to create collection '{collection_name}': {str(e)}")
     
     def create_collection(self, collection_name: str):
         """Create a new collection with hybrid configuration"""
@@ -682,8 +706,12 @@ class QdrantVectorStore:
             
         except Exception as e:
             logger.error(f"Error storing document chunks: {str(e)}")
-            logger.error(f"Collection: {collection_name}, Document: {document_id}")
-            if points:
+            # Only log collection name if it was successfully created
+            if 'collection_name' in locals():
+                logger.error(f"Collection: {collection_name}, Document: {document_id}")
+            else:
+                logger.error(f"Case: {case_name}, Document: {document_id}")
+            if 'points' in locals() and points:
                 logger.debug(f"Failed with {len(points)} points prepared")
             raise
 
@@ -813,19 +841,9 @@ class QdrantVectorStore:
         # First sanitize the name
         sanitized = self.sanitize_collection_name(folder_name)
         
-        # Add suffix based on search type
-        if settings.legal["enable_hybrid_search"]:
-            collection_name = f"{sanitized}_hybrid"
-        else:
-            collection_name = sanitized
-        
         # Final check that we're still within limits
         if len(collection_name) > 63:
-            # Truncate if adding suffix made it too long
-            if settings.legal["enable_hybrid_search"]:
-                collection_name = f"{sanitized[:56]}_hybrid"
-            else:
-                collection_name = sanitized[:63]
+            collection_name = sanitized[:63]
         
         return collection_name
 
