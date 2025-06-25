@@ -88,6 +88,11 @@ Examples:
         action='store_true',
         help='Save cost report after processing'
     )
+    parser.add_argument(
+        '--no-context',
+        action='store_true',
+        help='Skip context generation for chunks'
+    )
     
     args = parser.parse_args()
     
@@ -98,30 +103,22 @@ Examples:
     return args
 
 
-def process_single_folder(injector: DocumentInjector, folder_id: str, 
-                         max_documents: Optional[int] = None,
-                         dry_run: bool = False) -> dict:
-    """Process a single case folder"""
-    logger = logging.getLogger(__name__)
-    
-    logger.info(f"Processing folder: {folder_id}")
-    
-    if dry_run:
-        logger.info("DRY RUN - Would process this folder")
-        return {"status": "complete", "folder_id": folder_id}
-    
+async def process_single_folder(injector: DocumentInjector, folder_id: str,
+                       max_documents: Optional[int] = None) -> dict:
     try:
-        results = injector.process_case_folder(
-            parent_folder_id=folder_id,
+        # Process the folder
+        results = await injector.process_case_folder(
+            folder_id=folder_id,
             max_documents=max_documents
         )
         
         # Summary
         success_count = sum(1 for r in results if r.status == "success")
         duplicate_count = sum(1 for r in results if r.status == "duplicate")
-        failed_count = sum(1 for r in results if r.status == "failed")
+        failed_count = sum(1 for r in results if r.status == "error")
         
-        logger.info(f"Folder {folder_id} complete: "
+        logger = logging.getLogger(__name__)
+        logger.info(f"Folder {folder_id} processing complete: "
                    f"{success_count} processed, "
                    f"{duplicate_count} duplicates, "
                    f"{failed_count} failed")
@@ -135,71 +132,63 @@ def process_single_folder(injector: DocumentInjector, folder_id: str,
         }
         
     except Exception as e:
+        logger = logging.getLogger(__name__)
         logger.error(f"Error processing folder {folder_id}: {str(e)}")
         return {"status": "error", "folder_id": folder_id, "error": str(e)}
 
 
-def process_root_folder(injector: DocumentInjector, root_id: str,
+async def process_root_folder(injector: DocumentInjector, root_id: str,
                        max_folders: Optional[int] = None,
                        max_documents: Optional[int] = None,
                        dry_run: bool = False) -> dict:
-    """Process all case folders within a root folder"""
+    """Process a root folder by processing each case folder within it."""
     logger = logging.getLogger(__name__)
     
-    logger.info(f"Processing root folder: {root_id}")
+    # Get the case folders under the root
+    case_folders = injector.box_client.get_folder_items(root_id)
+    case_folders = [f for f in case_folders if f['type'] == 'folder']
     
-    try:
-        # Get all folders in root
-        case_folders = injector.box_client.get_subfolders(root_id)
+    if max_folders is not None:
+        case_folders = case_folders[:max_folders]
+    
+    logger.info(f"Found {len(case_folders)} case folders under root {root_id}")
+    
+    if dry_run:
+        logger.info("Dry run enabled, skipping actual processing")
+        return {"status": "dry_run", "folders": len(case_folders)}
+    
+    # Process each case folder
+    results = []
+    for i, folder in enumerate(case_folders, 1):
+        logger.info(f"\nProcessing case {i}/{len(case_folders)}: "
+                   f"{folder['name']}")
         
-        if max_folders:
-            case_folders = case_folders[:max_folders]
-            logger.info(f"Limited to {max_folders} folders")
-        
-        logger.info(f"Found {len(case_folders)} case folders to process")
-        
-        if dry_run:
-            logger.info("DRY RUN - Would process these folders:")
-            for folder in case_folders:
-                logger.info(f"  - {folder['name']} (ID: {folder['id']})")
-            return {"status": "dry_run", "folders": len(case_folders)}
-        
-        # Process each case folder
-        results = []
-        for i, folder in enumerate(case_folders, 1):
-            logger.info(f"\nProcessing case {i}/{len(case_folders)}: "
-                       f"{folder['name']}")
-            
-            result = process_single_folder(
-                injector, folder['id'], max_documents, dry_run
-            )
-            result['case_name'] = folder['name']
-            results.append(result)
-        
-        # Summary
-        total_success = sum(r.get('success', 0) for r in results)
-        total_duplicates = sum(r.get('duplicates', 0) for r in results)
-        total_failed = sum(r.get('failed', 0) for r in results)
-        
-        logger.info(f"\nRoot folder processing complete:")
-        logger.info(f"  Cases processed: {len(results)}")
-        logger.info(f"  Total documents: {total_success}")
-        logger.info(f"  Total duplicates: {total_duplicates}")
-        logger.info(f"  Total failures: {total_failed}")
-        
-        return {
-            "status": "complete",
-            "root_id": root_id,
-            "cases_processed": len(results),
-            "total_success": total_success,
-            "total_duplicates": total_duplicates,
-            "total_failed": total_failed,
-            "case_results": results
-        }
-        
-    except Exception as e:
-        logger.error(f"Error processing root folder {root_id}: {str(e)}")
-        return {"status": "error", "root_id": root_id, "error": str(e)}
+        folder_result = await process_single_folder(
+            injector,
+            folder_id=folder['id'],
+            max_documents=max_documents
+        )
+        folder_result['case_name'] = folder['name']
+        results.append(folder_result)
+    
+    # Summary
+    total_success = sum(r.get('success', 0) for r in results)
+    total_duplicates = sum(r.get('duplicates', 0) for r in results)
+    total_failed = sum(r.get('failed', 0) for r in results)
+    
+    logger.info(f"Root folder processing complete: "
+               f"{total_success} processed, "
+               f"{total_duplicates} duplicates, "
+               f"{total_failed} failed")
+    
+    return {
+        "status": "complete",
+        "root_id": root_id,
+        "success": total_success,
+        "duplicates": total_duplicates,
+        "failed": total_failed,
+        "folders": results
+    }
 
 
 def main():
@@ -229,7 +218,8 @@ def main():
     try:
         # Initialize injector
         injector = DocumentInjector(
-            enable_cost_tracking=not args.skip_cost_tracking
+            enable_cost_tracking=not args.skip_cost_tracking,
+            no_context=args.no_context
         )
         
         # Test connections
@@ -242,15 +232,17 @@ def main():
         
         # Process based on mode
         if args.folder_id:
-            result = process_single_folder(
+            import asyncio
+            result = asyncio.run(process_single_folder(
                 injector, args.folder_id, 
-                args.max_documents, args.dry_run
-            )
+                args.max_documents
+            ))
         else:  # args.root
-            result = process_root_folder(
+            import asyncio
+            result = asyncio.run(process_root_folder(
                 injector, args.root, args.max_folders,
                 args.max_documents, args.dry_run
-            )
+            ))
         
         # Save cost report if requested
         if args.save_cost_report and not args.skip_cost_tracking:

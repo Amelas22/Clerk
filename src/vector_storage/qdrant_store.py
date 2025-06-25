@@ -833,20 +833,6 @@ class QdrantVectorStore:
         
         return sanitized
 
-    def get_collection_name(self, folder_name: str) -> str:
-        """Generate safe collection name from folder name
-        
-        This method overrides the existing one to add proper sanitization.
-        """
-        # First sanitize the name
-        sanitized = self.sanitize_collection_name(folder_name)
-        
-        # Final check that we're still within limits
-        if len(collection_name) > 63:
-            collection_name = sanitized[:63]
-        
-        return collection_name
-
     def get_case_name_mapping(self) -> Dict[str, str]:
         """Get mapping of sanitized collection names to original case names
         

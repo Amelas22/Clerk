@@ -37,11 +37,12 @@ class ProcessingResult:
 class DocumentInjector:
     """Main orchestrator for document processing pipeline"""
     
-    def __init__(self, enable_cost_tracking: bool = True):
+    def __init__(self, enable_cost_tracking: bool = True, no_context: bool = False):
         """Initialize all components
         
         Args:
             enable_cost_tracking: Whether to track API costs
+            no_context: Whether to skip context generation
         """
         logger.info("Initializing Document Injector with Qdrant backend")
         
@@ -65,6 +66,9 @@ class DocumentInjector:
         if enable_cost_tracking:
             self.cost_tracker = CostTracker()
         
+        # Conditional context generation
+        self.no_context = no_context
+        
         # Processing statistics
         self.stats = {
             "total_processed": 0,
@@ -73,21 +77,21 @@ class DocumentInjector:
             "failed": 0
         }
     
-    def process_case_folder(self, parent_folder_id: str, 
-                          max_documents: Optional[int] = None) -> List[ProcessingResult]:
-        """Process all documents in a case folder
+    async def process_case_folder(self, folder_id: str, 
+                              max_documents: Optional[int] = None) -> List[ProcessingResult]:
+        """Process all documents in a case folder (Box folder)
         
         Args:
-            parent_folder_id: Box folder ID to process
+            folder_id: Box folder ID to process
             max_documents: Maximum number of documents to process (for testing)
             
         Returns:
             List of processing results
         """
-        logger.info(f"Starting to process case folder: {parent_folder_id}")
+        logger.info(f"Starting to process case folder: {folder_id}")
         
         # Get all PDFs from folder
-        documents = list(self.box_client.traverse_folder(parent_folder_id))
+        documents = list(self.box_client.traverse_folder(folder_id))
         
         if max_documents:
             documents = documents[:max_documents]
@@ -100,7 +104,7 @@ class DocumentInjector:
         for i, box_doc in enumerate(documents, 1):
             logger.info(f"Processing document {i}/{len(documents)}: {box_doc.name}")
             
-            result = self._process_single_document(box_doc)
+            result = await self._process_single_document(box_doc)
             results.append(result)
             
             # Update statistics
@@ -117,7 +121,7 @@ class DocumentInjector:
         
         return results
     
-    def _process_single_document(self, box_doc: BoxDocument) -> ProcessingResult:
+    async def _process_single_document(self, box_doc: BoxDocument) -> ProcessingResult:
         """Process a single document through the entire pipeline
         
         Args:
@@ -138,6 +142,7 @@ class DocumentInjector:
             # Step 1: Download document
             logger.debug(f"Downloading {box_doc.name}")
             content = self.box_client.download_file(box_doc.file_id)
+            logger.debug(f"Downloaded content type: {type(content).__name__}, length: {len(content)}")
             
             # Step 2: Check for duplicates
             doc_hash = self.deduplicator.calculate_document_hash(content)
@@ -197,14 +202,19 @@ class DocumentInjector:
             chunks = self.chunker.chunk_document(extracted.text, doc_metadata)
             logger.info(f"Created {len(chunks)} chunks from {box_doc.subfolder_name or 'root'}/{box_doc.name}")
             
-            # Step 7: Generate contexts for chunks
-            chunk_texts = [chunk.content for chunk in chunks]
-            chunks_with_context, context_usage = self.context_generator.generate_contexts_sync(
-                chunk_texts, extracted.text
-            )
+            # Step 7: Conditionally generate contexts for chunks
+            if self.no_context:
+                # Skip context generation
+                chunks_with_context = chunks
+                context_usage = None
+            else:
+                chunk_texts = [chunk.content for chunk in chunks]
+                chunks_with_context, context_usage = self.context_generator.generate_contexts_sync(
+                    chunk_texts, extracted.text
+                )
             
             # Track context generation costs
-            if self.enable_cost_tracking:
+            if self.enable_cost_tracking and context_usage:
                 self.cost_tracker.track_context_usage(
                     box_doc.file_id, 
                     context_usage["prompt_tokens"],
@@ -218,17 +228,17 @@ class DocumentInjector:
             for chunk, context_chunk in zip(chunks, chunks_with_context):
                 # Prepare search text for full-text search
                 search_text = self.sparse_encoder.prepare_search_text(
-                    context_chunk.combined_content
+                    getattr(context_chunk, 'combined_content', context_chunk.content)
                 )
                 
                 # Generate dense embedding
                 embedding, embedding_tokens = self.embedding_generator.generate_embedding(
-                    context_chunk.combined_content
+                    getattr(context_chunk, 'combined_content', context_chunk.content)
                 )
                 
                 # Generate sparse vectors for hybrid search
                 keyword_sparse, citation_sparse = self.sparse_encoder.encode_for_hybrid_search(
-                    context_chunk.combined_content
+                    getattr(context_chunk, 'combined_content', context_chunk.content)
                 )
                 
                 # Track embedding costs
@@ -240,21 +250,21 @@ class DocumentInjector:
                 
                 # Extract legal entities for metadata
                 entities = self.sparse_encoder.extract_legal_entities(
-                    context_chunk.combined_content
+                    getattr(context_chunk, 'combined_content', context_chunk.content)
                 )
                 
                 # Prepare chunk data with all vectors and metadata
                 chunk_data = {
-                    "content": context_chunk.combined_content,
+                    "content": getattr(context_chunk, 'combined_content', context_chunk.content),
                     "embedding": embedding,
                     "search_text": search_text,
                     "keywords_sparse": keyword_sparse,
                     "citations_sparse": citation_sparse,
                     "metadata": {
                         **chunk.metadata,
-                        "has_context": bool(context_chunk.context),
+                        "has_context": bool(getattr(context_chunk, 'context', None)),
                         "original_length": len(chunk.content),
-                        "context_length": len(context_chunk.context),
+                        "context_length": len(getattr(context_chunk, 'context', '')),
                         "has_citations": bool(entities["citations"]),
                         "citation_count": len(entities["citations"]),
                         "has_monetary": bool(entities["monetary"]),
@@ -353,7 +363,7 @@ class DocumentInjector:
         
         return "general"
     
-    def search_case(self, case_name: str, query: str, 
+    async def search_case(self, case_name: str, query: str, 
                    limit: int = 10, use_hybrid: bool = True) -> List[SearchResult]:
         """Search within a specific case using vector or hybrid search
         
@@ -421,7 +431,7 @@ class DocumentInjector:
         
         logger.info("=" * 50)
     
-    def process_multiple_cases(self, folder_ids: List[str]) -> Dict[str, List[ProcessingResult]]:
+    async def process_multiple_cases(self, folder_ids: List[str]) -> Dict[str, List[ProcessingResult]]:
         """Process multiple case folders
         
         Args:
@@ -431,12 +441,10 @@ class DocumentInjector:
             Dictionary mapping folder ID to processing results
         """
         all_results = {}
-        
         for folder_id in folder_ids:
             logger.info(f"\nProcessing case folder: {folder_id}")
-            results = self.process_case_folder(folder_id)
+            results = await self.process_case_folder(folder_id)
             all_results[folder_id] = results
-        
         return all_results
     
     def get_cost_report(self) -> Dict[str, Any]:
