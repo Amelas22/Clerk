@@ -103,11 +103,11 @@ Examples:
     return args
 
 
-async def process_single_folder(injector: DocumentInjector, folder_id: str,
+def process_single_folder(injector: DocumentInjector, folder_id: str,
                        max_documents: Optional[int] = None) -> dict:
     try:
         # Process the folder
-        results = await injector.process_case_folder(
+        results = injector.process_case_folder(
             folder_id=folder_id,
             max_documents=max_documents
         )
@@ -137,7 +137,7 @@ async def process_single_folder(injector: DocumentInjector, folder_id: str,
         return {"status": "error", "folder_id": folder_id, "error": str(e)}
 
 
-async def process_root_folder(injector: DocumentInjector, root_id: str,
+def process_root_folder(injector: DocumentInjector, root_id: str,
                        max_folders: Optional[int] = None,
                        max_documents: Optional[int] = None,
                        dry_run: bool = False) -> dict:
@@ -163,7 +163,7 @@ async def process_root_folder(injector: DocumentInjector, root_id: str,
         logger.info(f"\nProcessing case {i}/{len(case_folders)}: "
                    f"{folder['name']}")
         
-        folder_result = await process_single_folder(
+        folder_result = process_single_folder(
             injector,
             folder_id=folder['id'],
             max_documents=max_documents
@@ -232,17 +232,15 @@ def main():
         
         # Process based on mode
         if args.folder_id:
-            import asyncio
-            result = asyncio.run(process_single_folder(
+            result = process_single_folder(
                 injector, args.folder_id, 
                 args.max_documents
-            ))
+            )
         else:  # args.root
-            import asyncio
-            result = asyncio.run(process_root_folder(
+            result = process_root_folder(
                 injector, args.root, args.max_folders,
                 args.max_documents, args.dry_run
-            ))
+            )
         
         # Save cost report if requested
         if args.save_cost_report and not args.skip_cost_tracking:

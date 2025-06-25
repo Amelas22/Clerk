@@ -5,7 +5,6 @@ All database operations now use Qdrant exclusively.
 """
 
 import logging
-import asyncio
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -77,7 +76,7 @@ class DocumentInjector:
             "failed": 0
         }
     
-    async def process_case_folder(self, folder_id: str, 
+    def process_case_folder(self, folder_id: str, 
                               max_documents: Optional[int] = None) -> List[ProcessingResult]:
         """Process all documents in a case folder (Box folder)
         
@@ -104,7 +103,7 @@ class DocumentInjector:
         for i, box_doc in enumerate(documents, 1):
             logger.info(f"Processing document {i}/{len(documents)}: {box_doc.name}")
             
-            result = await self._process_single_document(box_doc)
+            result = self._process_single_document(box_doc)
             results.append(result)
             
             # Update statistics
@@ -121,7 +120,7 @@ class DocumentInjector:
         
         return results
     
-    async def _process_single_document(self, box_doc: BoxDocument) -> ProcessingResult:
+    def _process_single_document(self, box_doc: BoxDocument) -> ProcessingResult:
         """Process a single document through the entire pipeline
         
         Args:
@@ -363,7 +362,7 @@ class DocumentInjector:
         
         return "general"
     
-    async def search_case(self, case_name: str, query: str, 
+    def search_case(self, case_name: str, query: str, 
                    limit: int = 10, use_hybrid: bool = True) -> List[SearchResult]:
         """Search within a specific case using vector or hybrid search
         
@@ -431,7 +430,7 @@ class DocumentInjector:
         
         logger.info("=" * 50)
     
-    async def process_multiple_cases(self, folder_ids: List[str]) -> Dict[str, List[ProcessingResult]]:
+    def process_multiple_cases(self, folder_ids: List[str]) -> Dict[str, List[ProcessingResult]]:
         """Process multiple case folders
         
         Args:
@@ -443,7 +442,7 @@ class DocumentInjector:
         all_results = {}
         for folder_id in folder_ids:
             logger.info(f"\nProcessing case folder: {folder_id}")
-            results = await self.process_case_folder(folder_id)
+            results = self.process_case_folder(folder_id)
             all_results[folder_id] = results
         return all_results
     
