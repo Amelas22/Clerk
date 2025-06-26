@@ -63,7 +63,7 @@ class SparseVectorEncoder:
             "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
             "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
             "be", "have", "has", "had", "do", "does", "did", "will", "would",
-            "shall", "should", "may", "might", "must", "can", "could"
+            "shall", "should", "may", "might", "must", "can", "could", "chunk"
         ])
         
         # Initialize TF-IDF for keyword extraction
