@@ -40,7 +40,8 @@ class BoxClient:
     def _create_client(self) -> Client:
         """Create authenticated Box client"""
         try:
-            auth = JWTAuth.from_settings_file('box_config.json')
+            config_dict = self._create_config_dict()
+            auth = JWTAuth.from_settings_dictionary(config_dict)
             client = Client(auth)
             
             # Test connection
@@ -52,7 +53,42 @@ class BoxClient:
         except Exception as e:
             logger.error(f"Failed to create Box client: {str(e)}")
             raise
-    
+
+    def _create_config_dict(self) -> dict:
+        """Create Box configuration dictionary from environment variables"""
+        # Validate all required fields are present
+        required_fields = {
+            'client_id': settings.box.client_id,
+            'client_secret': settings.box.client_secret,
+            'jwt_key_id': settings.box.jwt_key_id,
+            'private_key': settings.box.private_key,
+            'enterprise_id': settings.box.enterprise_id
+        }
+        
+        missing_fields = [field for field, value in required_fields.items() if not value]
+        if missing_fields:
+            raise ValueError(f"Missing required Box API configuration: {', '.join(missing_fields)}. Check your environment variables.")
+        
+        # Ensure private key has proper format
+        private_key = settings.box.private_key
+        if not private_key.startswith('-----BEGIN'):
+            logger.warning("Private key may not be properly formatted. Ensure it includes the full PEM headers.")
+        
+        config = {
+            "boxAppSettings": {
+                "clientID": settings.box.client_id,
+                "clientSecret": settings.box.client_secret,
+                "appAuth": {
+                    "publicKeyID": settings.box.jwt_key_id,
+                    "privateKey": private_key,
+                    "passphrase": settings.box.passphrase or ""  # Handle empty passphrase
+                }
+            },
+            "enterpriseID": settings.box.enterprise_id
+        }
+        
+        return config
+
     def get_case_folder_info(self, folder_id: str) -> Tuple[str, str]:
         """Get case name and folder name for a given folder
         

@@ -20,6 +20,11 @@ class BoxConfig:
     jwt_key_id: str = os.getenv("BOX_JWT_KEY_ID", "")
     private_key: str = os.getenv("BOX_PRIVATE_KEY", "").replace("\\n", "\n")
     passphrase: str = os.getenv("BOX_PASSPHRASE", "")
+    
+    def __post_init__(self):
+        """Validate configuration after initialization"""
+        if self.private_key and not self.private_key.startswith('-----BEGIN'):
+            raise ValueError("BOX_PRIVATE_KEY must be a valid PEM-formatted private key")
 
 @dataclass
 class QdrantConfig:
