@@ -119,7 +119,7 @@ class DocumentInjector:
         self._log_processing_summary()
         
         return results
-    
+
     def _process_single_document(self, box_doc: BoxDocument) -> ProcessingResult:
         """Process a single document through the entire pipeline
         
@@ -227,17 +227,17 @@ class DocumentInjector:
             for chunk, context_chunk in zip(chunks, chunks_with_context):
                 # Prepare search text for full-text search
                 search_text = self.sparse_encoder.prepare_search_text(
-                    getattr(context_chunk, 'combined_content', context_chunk.content)
+                    getattr(context_chunk, 'combined_content', context_chunk.original_chunk)
                 )
                 
                 # Generate dense embedding
                 embedding, embedding_tokens = self.embedding_generator.generate_embedding(
-                    getattr(context_chunk, 'combined_content', context_chunk.content)
+                    getattr(context_chunk, 'combined_content', context_chunk.original_chunk)
                 )
                 
                 # Generate sparse vectors for hybrid search
                 keyword_sparse, citation_sparse = self.sparse_encoder.encode_for_hybrid_search(
-                    getattr(context_chunk, 'combined_content', context_chunk.content)
+                    getattr(context_chunk, 'combined_content', context_chunk.original_chunk)
                 )
                 
                 # Track embedding costs
@@ -249,12 +249,12 @@ class DocumentInjector:
                 
                 # Extract legal entities for metadata
                 entities = self.sparse_encoder.extract_legal_entities(
-                    getattr(context_chunk, 'combined_content', context_chunk.content)
+                    getattr(context_chunk, 'combined_content', context_chunk.original_chunk)
                 )
                 
                 # Prepare chunk data with all vectors and metadata
                 chunk_data = {
-                    "content": getattr(context_chunk, 'combined_content', context_chunk.content),
+                    "content": getattr(context_chunk, 'combined_content', context_chunk.original_chunk),
                     "embedding": embedding,
                     "search_text": search_text,
                     "keywords_sparse": keyword_sparse,
