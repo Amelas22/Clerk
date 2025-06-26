@@ -1,11 +1,13 @@
 """
 Sparse vector encoder for hybrid search.
 Creates sparse representations for keyword and citation matching.
+Using hash-based consistent indexing.
 """
 
 import re
 import logging
-from typing import Dict, List, Tuple, Optional
+import hashlib
+from typing import Dict, List, Tuple, Optional, Set
 from collections import Counter
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -57,7 +59,11 @@ class SparseVectorEncoder:
         # Legal stopwords (common words to exclude)
         self.legal_stopwords = set([
             "plaintiff", "defendant", "court", "case", "matter",
-            "pursuant", "whereas", "therefore", "hereby", "herein"
+            "pursuant", "whereas", "therefore", "hereby", "herein",
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
+            "be", "have", "has", "had", "do", "does", "did", "will", "would",
+            "shall", "should", "may", "might", "must", "can", "could"
         ])
         
         # Initialize TF-IDF for keyword extraction
@@ -69,20 +75,36 @@ class SparseVectorEncoder:
             smooth_idf=True
         )
         
-        # Vocabulary for sparse vectors (will be built dynamically)
-        self.keyword_vocab = {}
-        self.citation_vocab = {}
-        self.vocab_size = 10000  # Maximum vocabulary size
+        # Use fixed dimension for sparse vectors
+        self.sparse_dimension = 100000  # Large enough to avoid collisions
     
-    def extract_legal_entities(self, text: str) -> Dict[str, List[str]]:
-        """Extract legal entities from text
+    def _hash_token_to_index(self, token: str, max_dim: int = None) -> int:
+        """
+        Hash a token to a consistent index using SHA-256.
+        This ensures the same token always maps to the same index.
         
         Args:
-            text: Input text
+            token: Token to hash
+            max_dim: Maximum dimension for the sparse vector
             
         Returns:
-            Dictionary of entity types to lists of entities
+            Integer index between 0 and max_dim-1
         """
+        if max_dim is None:
+            max_dim = self.sparse_dimension
+            
+        # Use SHA-256 for consistent hashing
+        hash_object = hashlib.sha256(token.encode('utf-8'))
+        hash_hex = hash_object.hexdigest()
+        
+        # Convert hex to integer and modulo by max dimension
+        hash_int = int(hash_hex, 16)
+        index = hash_int % max_dim
+        
+        return index
+    
+    def extract_legal_entities(self, text: str) -> Dict[str, List[str]]:
+        """Extract legal entities from text"""
         entities = {
             "citations": [],
             "monetary": [],
@@ -114,14 +136,7 @@ class SparseVectorEncoder:
         return entities
     
     def tokenize_legal_text(self, text: str) -> List[str]:
-        """Tokenize text with legal-specific handling
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            List of tokens
-        """
+        """Tokenize text with legal-specific handling"""
         # Process with spaCy
         doc = self.nlp(text.lower())
         
@@ -132,19 +147,21 @@ class SparseVectorEncoder:
                 continue
             
             # Skip stopwords
-            if token.text in self.legal_stopwords:
+            if token.text in self.legal_stopwords or len(token.text) < 2:
                 continue
             
             # Keep legal terms intact
             if token.text.startswith("§") or token.text in ["u.s.c.", "f.2d", "f.3d"]:
                 tokens.append(token.text)
             else:
+                # Use lemma for consistency
                 tokens.append(token.lemma_)
         
         return tokens
     
     def build_keyword_sparse_vector(self, text: str) -> Dict[int, float]:
-        """Build sparse vector for keyword matching with integer indices
+        """
+        Build sparse vector for keyword matching using hash-based indexing.
         
         Args:
             text: Input text
@@ -155,36 +172,42 @@ class SparseVectorEncoder:
         # Tokenize
         tokens = self.tokenize_legal_text(text)
         
+        if not tokens:
+            logger.warning("No tokens extracted from text")
+            return {}
+        
         # Count token frequencies
         token_counts = Counter(tokens)
         
-        # Build sparse vector with integer indices
+        # Build sparse vector using hash-based indices
         sparse_vector = {}
         
         for token, count in token_counts.items():
-            # Get or assign index
-            if token not in self.keyword_vocab:
-                if len(self.keyword_vocab) < self.vocab_size:
-                    self.keyword_vocab[token] = len(self.keyword_vocab)
-                else:
-                    continue  # Skip if vocabulary is full
-            
-            # Use integer index
-            idx = self.keyword_vocab[token]
+            # Get consistent index using hash
+            idx = self._hash_token_to_index(token)
             
             # TF-IDF style weighting
+            # Using log normalization for term frequency
             tf = 1 + np.log(count)
+            
+            # Store in sparse vector
             sparse_vector[idx] = tf
         
-        # Normalize
+        # L2 normalization
         if sparse_vector:
             norm = np.sqrt(sum(v**2 for v in sparse_vector.values()))
-            sparse_vector = {k: v/norm for k, v in sparse_vector.items()}
+            if norm > 0:
+                sparse_vector = {k: v/norm for k, v in sparse_vector.items()}
+            else:
+                logger.warning("Zero norm encountered in sparse vector")
+        
+        logger.debug(f"Created keyword sparse vector with {len(sparse_vector)} non-zero elements")
         
         return sparse_vector
 
     def build_citation_sparse_vector(self, text: str) -> Dict[int, float]:
-        """Build sparse vector for citation matching with integer indices
+        """
+        Build sparse vector for citation matching using hash-based indexing.
         
         Args:
             text: Input text
@@ -202,28 +225,43 @@ class SparseVectorEncoder:
             entities["rules"]
         )
         
-        # Build sparse vector with integer indices
+        if not all_citations:
+            logger.debug("No citations found in text")
+            return {}
+        
+        # Build sparse vector using hash-based indices
         sparse_vector = {}
+        
+        # Use a different prefix for citation indices to avoid collision with keywords
+        citation_prefix = "CITATION_"
         
         for citation in all_citations:
             # Normalize citation
             normalized = citation.lower().strip()
             
-            # Get or assign index
-            if normalized not in self.citation_vocab:
-                if len(self.citation_vocab) < 1000:  # Smaller vocab for citations
-                    self.citation_vocab[normalized] = len(self.citation_vocab)
-                else:
-                    continue
+            # Add prefix to distinguish from keywords
+            prefixed_citation = f"{citation_prefix}{normalized}"
             
-            # Use integer index
-            idx = self.citation_vocab[normalized]
+            # Get consistent index using hash
+            idx = self._hash_token_to_index(prefixed_citation)
+            
+            # Use binary weighting for citations (present or not)
             sparse_vector[idx] = 1.0
+        
+        # Normalize
+        if sparse_vector:
+            # For citations, we can use L2 norm or keep binary
+            norm = np.sqrt(sum(v**2 for v in sparse_vector.values()))
+            if norm > 0:
+                sparse_vector = {k: v/norm for k, v in sparse_vector.items()}
+        
+        logger.debug(f"Created citation sparse vector with {len(sparse_vector)} citations")
         
         return sparse_vector
 
     def encode_for_hybrid_search(self, text: str) -> Tuple[Dict[int, float], Dict[int, float]]:
-        """Encode text for both keyword and citation sparse vectors with integer indices
+        """
+        Encode text for both keyword and citation sparse vectors with hash-based indexing.
         
         Args:
             text: Input text
@@ -231,70 +269,19 @@ class SparseVectorEncoder:
         Returns:
             Tuple of (keyword_sparse, citation_sparse) dictionaries with integer indices
         """
+        if not text or not text.strip():
+            logger.warning("Empty text provided for sparse encoding")
+            return {}, {}
+        
         keyword_sparse = self.build_keyword_sparse_vector(text)
         citation_sparse = self.build_citation_sparse_vector(text)
         
+        logger.debug(f"Encoded text to sparse vectors: keywords={len(keyword_sparse)}, citations={len(citation_sparse)}")
+        
         return keyword_sparse, citation_sparse
-
-    def save_vocabulary(self, filepath: str = "vocab.json"):
-        """Save vocabulary mappings to file for consistency across runs
-        
-        Args:
-            filepath: Path to save vocabulary
-        """
-        import json
-        
-        vocab_data = {
-            "keyword_vocab": self.keyword_vocab,
-            "citation_vocab": self.citation_vocab,
-            "vocab_size": self.vocab_size
-        }
-        
-        with open(filepath, 'w') as f:
-            json.dump(vocab_data, f, indent=2)
-        
-        logger.info(f"Saved vocabulary to {filepath}")
-
-    def load_vocabulary(self, filepath: str = "vocab.json"):
-        """Load vocabulary mappings from file
-        
-        Args:
-            filepath: Path to vocabulary file
-        """
-        import json
-        import os
-        
-        if os.path.exists(filepath):
-            with open(filepath, 'r') as f:
-                vocab_data = json.load(f)
-            
-            self.keyword_vocab = vocab_data.get("keyword_vocab", {})
-            self.citation_vocab = vocab_data.get("citation_vocab", {})
-            
-            # Convert string keys to integers if needed
-            if self.keyword_vocab and isinstance(list(self.keyword_vocab.values())[0], str):
-                # Old format with string indices, need to rebuild
-                self.keyword_vocab = {k: i for i, k in enumerate(self.keyword_vocab.keys())}
-            
-            if self.citation_vocab and isinstance(list(self.citation_vocab.values())[0], str):
-                # Old format with string indices, need to rebuild
-                self.citation_vocab = {k: i for i, k in enumerate(self.citation_vocab.keys())}
-            
-            logger.info(f"Loaded vocabulary from {filepath}")
-            logger.info(f"Keyword vocab size: {len(self.keyword_vocab)}")
-            logger.info(f"Citation vocab size: {len(self.citation_vocab)}")
-        else:
-            logger.info("No existing vocabulary found, starting fresh")
     
     def prepare_search_text(self, text: str) -> str:
-        """Prepare text for full-text search with legal-specific preprocessing
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            Preprocessed text optimized for search
-        """
+        """Prepare text for full-text search with legal-specific preprocessing"""
         # Extract entities
         entities = self.extract_legal_entities(text)
         
@@ -333,18 +320,18 @@ class SparseVectorEncoder:
         return " ".join(unique_tokens)
     
     def extract_important_terms(self, text: str, max_terms: int = 10) -> List[Tuple[str, float]]:
-        """Extract important terms from text using TF-IDF
-        
-        Args:
-            text: Input text
-            max_terms: Maximum number of terms to extract
-            
-        Returns:
-            List of (term, score) tuples
-        """
+        """Extract important terms from text using TF-IDF"""
         try:
+            # Tokenize first
+            tokens = self.tokenize_legal_text(text)
+            if not tokens:
+                return []
+            
+            # Join tokens back for TF-IDF
+            processed_text = " ".join(tokens)
+            
             # Fit TF-IDF on single document
-            tfidf_matrix = self.tfidf_vectorizer.fit_transform([text])
+            tfidf_matrix = self.tfidf_vectorizer.fit_transform([processed_text])
             feature_names = self.tfidf_vectorizer.get_feature_names_out()
             
             # Get scores
@@ -362,18 +349,7 @@ class SparseVectorEncoder:
     
     def calculate_bm25_score(self, query_terms: List[str], doc_terms: List[str],
                            avg_doc_length: float = 1000, k1: float = 1.2, b: float = 0.75) -> float:
-        """Calculate BM25 score for ranking
-        
-        Args:
-            query_terms: Query terms
-            doc_terms: Document terms
-            avg_doc_length: Average document length in corpus
-            k1: BM25 parameter (default 1.2)
-            b: BM25 parameter (default 0.75)
-            
-        Returns:
-            BM25 score
-        """
+        """Calculate BM25 score for ranking"""
         doc_length = len(doc_terms)
         doc_term_counts = Counter(doc_terms)
         
@@ -382,7 +358,7 @@ class SparseVectorEncoder:
             if term in doc_term_counts:
                 tf = doc_term_counts[term]
                 # Simplified IDF (would need corpus statistics in production)
-                idf = np.log(1000 / (1 + tf))  # Assume 1000 docs, adjust as needed
+                idf = np.log(1000 / (1 + tf))  # Assume 1000 docs
                 
                 # BM25 formula
                 numerator = idf * tf * (k1 + 1)
@@ -410,14 +386,7 @@ class LegalQueryAnalyzer:
         }
     
     def analyze_query(self, query: str) -> Dict[str, any]:
-        """Analyze query to determine optimal search strategy
-        
-        Args:
-            query: User query
-            
-        Returns:
-            Analysis results with recommended weights
-        """
+        """Analyze query to determine optimal search strategy"""
         analysis = {
             "query_type": "general",
             "entities": self.sparse_encoder.extract_legal_entities(query),
